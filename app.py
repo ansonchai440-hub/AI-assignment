@@ -21,7 +21,7 @@ Run this from a terminal with: streamlit run app.py
 """
 
 import streamlit as st
-from chatbot_core import chat
+from chatbot_core import chat, reset_context
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
@@ -63,6 +63,7 @@ with st.sidebar:
     
     st.markdown("---")
     if st.button("Clear Chat History", use_container_width=True):
+        reset_context()  # wipe the bot's dialogue memory too
         st.session_state.messages = []
         st.session_state.active_slots = {}
         st.session_state.last_intent = "greeting"
@@ -76,7 +77,7 @@ st.caption("Ask about exercises, muscle groups, equipment, or ask for a program 
 for msg in st.session_state.messages:
     avatar_type = "assistant" if msg["role"] == "assistant" else "user"
     
-    with st.chat_message(msg["role"], avatar=avatar_type):
+    with st.chat_message(msg["role"]):
         # Feature Feature: Clean Technical Routine Formatting
         if msg.get("intent") == "program_recommendation":
             st.markdown("### Your Generated Routine Blueprint")
@@ -140,7 +141,7 @@ if final_query:
         "text": final_query
     })
     
-    with st.chat_message("user", avatar="user"):
+    with st.chat_message("user"):
         st.write(final_query)
 
     # Process via ML backend
@@ -161,7 +162,7 @@ if final_query:
     })
     
     # Instant UI rendering for smooth feedback
-    with st.chat_message("assistant", avatar="assistant"):
+    with st.chat_message("assistant"):
         if intent == "program_recommendation":
             st.markdown("### Your Generated Routine Blueprint")
             st.code(reply, language="markdown")

@@ -174,6 +174,18 @@ def find_exercise(text):
     return best_row
 
 
+# --- Dialogue context: the bot's short-term memory within a session ---
+# Lets follow-ups like "how do I perform it?" or "what equipment do I
+# need?" refer back to the exercise(s) just discussed.
+CONTEXT = {"exercise": None, "recent_list": [], "pending_intent": None}
+
+
+def reset_context():
+    CONTEXT["exercise"] = None
+    CONTEXT["recent_list"] = []
+    CONTEXT["pending_intent"] = None
+
+
 def generate_response(intent, slots, text):
     if intent in ("greeting", "goodbye", "thanks", "motivation", "small_talk", "fallback"):
         return random.choice(RESPONSES[intent])
@@ -190,16 +202,24 @@ def generate_response(intent, slots, text):
         else:
             return "Which body part are you targeting? e.g. chest, back, legs, shoulders."
         matches = subset["Title"].sample(min(3, len(subset))).tolist()
+        CONTEXT["recent_list"] = matches
+        CONTEXT["exercise"] = None
         return f"Here are some {label} exercises: " + ", ".join(matches)
 
     if intent == "exercise_by_equipment":
         eq = slots.get("equipment")
         if not eq:
+            # follow-up like "what equipment do I need?" about the last exercise
+            if CONTEXT["exercise"] is not None:
+                row = CONTEXT["exercise"]
+                return f"{row['Title']} uses: {row['Equipment']}."
             return "What equipment do you have available? e.g. dumbbells, barbell, bodyweight only."
         subset = df[df["Equipment"] == eq]
         if subset.empty:
             return f"I don't have exercises listed for '{eq}'."
         matches = subset["Title"].sample(min(3, len(subset))).tolist()
+        CONTEXT["recent_list"] = matches
+        CONTEXT["exercise"] = None
         return f"Here are exercises using {eq}: " + ", ".join(matches)
 
     if intent == "exercise_by_level":
@@ -208,6 +228,8 @@ def generate_response(intent, slots, text):
             return "What's your level - beginner, intermediate, or expert?"
         subset = df[df["Level"] == lvl]
         matches = subset["Title"].sample(min(3, len(subset))).tolist()
+        CONTEXT["recent_list"] = matches
+        CONTEXT["exercise"] = None
         return f"Here's a {lvl} option: " + ", ".join(matches)
 
     if intent == "program_recommendation":
@@ -215,8 +237,16 @@ def generate_response(intent, slots, text):
 
     if intent in ("exercise_howto", "muscle_info"):
         row = find_exercise(text)
+        if row is None and CONTEXT["exercise"] is not None:
+            # follow-up like "how do I perform it?" -> use the remembered exercise
+            row = CONTEXT["exercise"]
         if row is None:
+            CONTEXT["pending_intent"] = intent  # wait for the user to name one
+            if CONTEXT["recent_list"]:
+                opts = ", ".join(CONTEXT["recent_list"])
+                return f"Which one did you mean: {opts}? Type its name and I'll explain it."
             return "Which exercise did you mean? Try naming it directly, e.g. 'squat' or 'bench press'."
+        CONTEXT["exercise"] = row
         if intent == "exercise_howto":
             if row["has_description"]:
                 return f"{row['Title']}: {row['Desc']}"
@@ -229,6 +259,15 @@ def generate_response(intent, slots, text):
 def chat(text):
     intent, confidence = predict_intent(text)
     slots = extract_slots(text)
+
+    # --- Clarification follow-up ---
+    # If the bot just asked "which exercise did you mean?" and the user
+    # replied with an exercise name (e.g. "Hang Clean"), answer the pending
+    # question instead of misreading the bare name as a new intent.
+    if CONTEXT.get("pending_intent") and find_exercise(text) is not None:
+        intent = CONTEXT["pending_intent"]
+        confidence = 1.0  # rule-forced, see report note
+    CONTEXT["pending_intent"] = None  # one shot: cleared after every turn
     
     # --- NEW: Rule-Based Dialogue Override ---
     # If the NLP model fails to confidently guess the intent, but we 
