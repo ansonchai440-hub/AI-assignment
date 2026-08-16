@@ -24,10 +24,6 @@
         "Hi coach",
         "Hello coach",
         "Hey trainer",
-        "Hi clanker",
-        "Hey clanker",
-        "clanker",
-        "Clanker",
         "helo",
         "hii",
         "heyyy",
@@ -41,7 +37,10 @@
         "yo coach im back",
         "hello i want to start"
       ],
-      "responses": ["Hey! Ready to talk fitness?", "Hi there! What can I help you with today?"]
+      "responses": [
+        "Hey! Ready to talk fitness?",
+        "Hi there! What can I help you with today?"
+      ]
     },
     {
       "tag": "goodbye",
@@ -79,7 +78,10 @@
         "quit",
         "exit"
       ],
-      "responses": ["Catch you later, keep training!", "Bye! Stay consistent."]
+      "responses": [
+        "Catch you later, keep training!",
+        "Bye! Stay consistent."
+      ]
     },
     {
       "tag": "thanks",
@@ -113,7 +115,10 @@
         "very helpful thank you",
         "thanks this is great info"
       ],
-      "responses": ["Anytime!", "Happy to help!"]
+      "responses": [
+        "Anytime!",
+        "Happy to help!"
+      ]
     },
     {
       "tag": "exercise_howto",
@@ -154,7 +159,9 @@
         "explain to me how to crunch properly",
         "how to do bicep curls the right way"
       ],
-      "responses": ["Here's how to do {exercise}: {description}"]
+      "responses": [
+        "Here's how to do {exercise}: {description}"
+      ]
     },
     {
       "tag": "exercise_by_bodypart",
@@ -195,7 +202,9 @@
         "exercises that target the quads",
         "i need something for my traps"
       ],
-      "responses": ["Here are some {bodypart} exercises you can try: {exercise_list}"]
+      "responses": [
+        "Here are some {bodypart} exercises you can try: {exercise_list}"
+      ]
     },
     {
       "tag": "exercise_by_equipment",
@@ -234,7 +243,9 @@
         "any exercise using exercise ball",
         "cable only exercises please"
       ],
-      "responses": ["Here are exercises using {equipment}: {exercise_list}"]
+      "responses": [
+        "Here are exercises using {equipment}: {exercise_list}"
+      ]
     },
     {
       "tag": "exercise_by_level",
@@ -270,7 +281,9 @@
         "i have been lifting for 5 years suggest something tough",
         "simple exercise to start my fitness journey"
       ],
-      "responses": ["Here's a {level} exercise: {exercise}"]
+      "responses": [
+        "Here's a {level} exercise: {exercise}"
+      ]
     },
     {
       "tag": "muscle_info",
@@ -304,7 +317,9 @@
         "does bench press work shoulders too",
         "which muscles are engaged during burpees"
       ],
-      "responses": ["{exercise} primarily targets the {bodypart}."]
+      "responses": [
+        "{exercise} primarily targets the {bodypart}."
+      ]
     },
     {
       "tag": "motivation",
@@ -340,7 +355,10 @@
         "im tired and want to skip today should i",
         "encourage me to go gym"
       ],
-      "responses": ["Every rep counts \u2014 you've got this.", "Small steps still move you forward."]
+      "responses": [
+        "Every rep counts \u2014 you've got this.",
+        "Small steps still move you forward."
+      ]
     },
     {
       "tag": "small_talk",
@@ -374,7 +392,10 @@
         "how are you doing today",
         "whats your name"
       ],
-      "responses": ["I'm your fitness assistant! Ask me about exercises, muscle groups, or equipment.", "I can recommend exercises and explain how to do them \u2014 just ask."]
+      "responses": [
+        "I'm your fitness assistant! Ask me about exercises, muscle groups, or equipment.",
+        "I can recommend exercises and explain how to do them \u2014 just ask."
+      ]
     },
     {
       "tag": "program_recommendation",
@@ -410,7 +431,9 @@
         "design me a plan to get stronger",
         "gym plan for the whole week please"
       ],
-      "responses": ["Here's a program for you:"]
+      "responses": [
+        "Here's a program for you:"
+      ]
     },
     {
       "tag": "fallback",
@@ -434,9 +457,43 @@
         "whats the news today",
         "how do i install windows",
         "recommend a good restaurant",
-        "what phone should i buy"
+        "what phone should i buy",
+        "how do i fix my car",
+        "how do i teach my dog to sit",
+        "what ingredients do i need for baking",
+        "whats the best way to learn coding",
+        "teach me how to drive a manual car",
+        "give me a study plan for my exams",
+        "how do i improve my typing speed",
+        "recommend me a good gaming mouse",
+        "what is the proper technique for parallel parking",
+        "steps to install windows on my pc",
+        "how should i water my plants",
+        "explain how to bake a chocolate cake",
+        "i want to build a website where do i start",
+        "whats a good method for skincare",
+        "how do i level up fast in this game",
+        "which phone should i buy",
+        "how do i cook pasta at home",
+        "how do i install python on my computer",
+        "show me how to make coffee",
+        "teach me how to drive a car",
+        "explain the steps to reset my password",
+        "what ingredients do i need for a cake",
+        "what is the best site to learn coding",
+        "whats a good method for studying",
+        "recommend me a good laptop to buy",
+        "what is the capital of japan",
+        "tell me a story about dragons",
+        "how many calories are in nasi lemak",
+        "what should i eat for dinner tonight",
+        "give me tips for my job interview",
+        "which phone has the best camera"
       ],
-      "responses": ["Sorry, I didn't quite get that. Try asking about an exercise, a body part, or equipment.", "That's outside my area \u2014 I only know fitness! Ask me about exercises, muscle groups, or workout plans."]
+      "responses": [
+        "Sorry, I didn't quite get that. Try asking about an exercise, a body part, or equipment.",
+        "That's outside my area \u2014 I only know fitness! Ask me about exercises, muscle groups, or workout plans."
+      ]
     }
   ]
 }

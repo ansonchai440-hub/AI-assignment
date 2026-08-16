@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import (classification_report, accuracy_score,
                              confusion_matrix, ConfusionMatrixDisplay)
 
-CONFIDENCE_THRESHOLD = 0.14  # keep identical to chatbot_core.py
+CONFIDENCE_THRESHOLD = 0.20  # keep identical to chatbot_core.py
 
 with open("intent_classifier.pkl", "rb") as f:
     saved = pickle.load(f)
@@ -31,11 +31,12 @@ model_name = saved.get("model_name", "classifier")
 
 test = pd.read_csv("shared_test_set.csv")
 
-from chatbot_core import chat  # evaluate the REAL bot, including the
-                                # rule-based override in chat()
+from chatbot_core import chat, reset_context  # evaluate the REAL bot,
+                                # including all rule-based overrides in chat()
 
 def predict(text):
-    intent, confidence, slots, reply = chat(text)
+    reset_context()  # each test question judged independently, no carry-over
+    intent, confidence, slots, reply, data = chat(text)  # chat() now returns 5 values
     return intent, confidence
 
 test[["predicted_intent", "confidence"]] = test["text"].apply(
