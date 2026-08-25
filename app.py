@@ -112,8 +112,8 @@ st.markdown("""
         color: #FFFFFF !important;
     }
 
-    /* 7. Circular Carousel Arrow Button */
-    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child div[data-testid="stButton"] > button {
+    /* 7. Circular Carousel Arrow Button (Excluding Expander Cards & Tabs) */
+    div[data-testid="stHorizontalBlock"]:not([data-testid="stExpander"] *):not([data-testid="stTabs"] *) > div[data-testid="stColumn"]:last-child div[data-testid="stButton"] > button {
         border-radius: 50% !important;
         width: 42px !important;
         height: 42px !important;
@@ -131,7 +131,7 @@ st.markdown("""
         color: #C9D1D9 !important;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3) !important;
     }
-    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child div[data-testid="stButton"] > button:hover {
+    div[data-testid="stHorizontalBlock"]:not([data-testid="stExpander"] *):not([data-testid="stTabs"] *) > div[data-testid="stColumn"]:last-child div[data-testid="stButton"] > button:hover {
         background-color: #30363D !important;
         border-color: #58A6FF !important;
         color: #58A6FF !important;
