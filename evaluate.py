@@ -14,7 +14,6 @@ Outputs:
    so you can discuss WHICH mistakes the bot makes, not just how many.
 """
 
-import pickle
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -24,19 +23,20 @@ from sklearn.metrics import (classification_report, accuracy_score,
 
 CONFIDENCE_THRESHOLD = 0.20  # keep identical to chatbot_core.py
 
+import pickle
 with open("intent_classifier.pkl", "rb") as f:
-    saved = pickle.load(f)
-vectorizer, clf = saved["vectorizer"], saved["model"]
-model_name = saved.get("model_name", "classifier")
+    model_name = pickle.load(f).get("model_name", "classifier")  # label only
 
 test = pd.read_csv("shared_test_set.csv")
 
-from chatbot_core import chat, reset_context  # evaluate the REAL bot,
-                                # including all rule-based overrides in chat()
+from chatbot_core import FitnessBot  # evaluate the REAL bot, including all
+                                     # rule-based overrides inside chat()
 
 def predict(text):
-    reset_context()  # each test question judged independently, no carry-over
-    intent, confidence, slots, reply, data = chat(text)  # chat() now returns 5 values
+    # A FRESH bot per question: guarantees no dialogue context, pending
+    # wizard state or TTL counter carries over between test items.
+    bot = FitnessBot()
+    intent, confidence, slots, reply, data = bot.chat(text)
     return intent, confidence
 
 test[["predicted_intent", "confidence"]] = test["text"].apply(

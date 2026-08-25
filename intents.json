@@ -429,7 +429,15 @@
         "i wanna get fit make me a program",
         "suggest a routine for someone starting out",
         "design me a plan to get stronger",
-        "gym plan for the whole week please"
+        "gym plan for the whole week please",
+        "custom routine",
+        "random test routine",
+        "random",
+        "1 day full body",
+        "3 days with 1 rest day",
+        "7 day full body workout",
+        "5 days no legs",
+        "2 day upper lower split"
       ],
       "responses": [
         "Here's a program for you:"
