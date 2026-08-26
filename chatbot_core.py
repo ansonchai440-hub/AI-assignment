@@ -1,7 +1,7 @@
 """
 Step 5+6: System Integration, NLU Processing & Core Business Logic
 
-CHANGELOG & ARCHITECTURAL HIGHLIGHTS:
+CHANGELOG & ARCHITECTURAL HIGHLIGHTS
 - Section 1: Data Loaders & Vocabulary Mappings (Slots, Synonyms, Singular/Multi Bodyparts)
 - Section 2: Progressive Filtering & Dynamic Volume/Rep Prescription
 - Section 3: Smart Multi-Day Routine Generation (Full-Body / Split Logic)
