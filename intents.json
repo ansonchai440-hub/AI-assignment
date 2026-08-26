@@ -430,17 +430,65 @@
         "suggest a routine for someone starting out",
         "design me a plan to get stronger",
         "gym plan for the whole week please",
-        "custom routine",
         "random test routine",
         "random",
         "1 day full body",
         "3 days with 1 rest day",
         "7 day full body workout",
         "5 days no legs",
+        "custom routine",
         "2 day upper lower split"
       ],
       "responses": [
         "Here's a program for you:"
+      ]
+    },
+    {
+      "tag": "exercise_swap",
+      "patterns": [
+        "What can I do instead of bench press",
+        "Alternative for squats",
+        "Substitute for deadlift",
+        "I don't have a barbell to squat what can I replace it with",
+        "Swap this exercise",
+        "Give me an alternative movement for pull ups",
+        "Other options for leg press",
+        "Can I replace this exercise",
+        "What is a good substitute",
+        "I want to replace squats"
+      ],
+      "responses": [
+        "Here is an alternative exercise you can try: {exercise_list}"
+      ]
+    },
+    {
+      "tag": "recovery_and_rest",
+      "patterns": [
+        "How long should I rest between sets",
+        "Should I work out if I'm still sore",
+        "How many rest days do I need per week",
+        "Is it okay to train muscle groups two days in a row",
+        "How much sleep for muscle recovery",
+        "Can I work out with DOMS",
+        "Should I train while sore"
+      ],
+      "responses": [
+        "Rest and recovery are vital for muscle growth. For strength, rest 2-3 minutes between sets; for hypertrophy, 60-90 seconds is standard."
+      ]
+    },
+    {
+      "tag": "nutrition_out_of_scope",
+      "patterns": [
+        "How much protein should I eat",
+        "How many calories are in nasi lemak",
+        "What should I eat before a workout",
+        "Best diet for weight loss",
+        "Should I take creatine",
+        "What meal plan should I follow",
+        "How much water should I drink"
+      ],
+      "responses": [
+        "I specialize strictly in exercise routines and workout planning! For specific diet or macro advice, consulting a nutritionist is best."
       ]
     },
     {

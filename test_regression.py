@@ -1,5 +1,5 @@
 """
-Stepp: 7.5
+Step 7.5
 Response-layer regression suite.
 
 WHY THIS EXISTS
@@ -282,7 +282,7 @@ check("fuzzy never auto-selects (exact lookup still authoritative)",
 section("12. Exercise swapper (same-muscle substitution)")
 swapper_bot = FitnessBot()
 intent, conf, slots, reply, data = swapper_bot.chat("swap bench press")
-check("swapper detects request", intent == "swap_exercise")
+check("swapper detects request", intent == "exercise_swap", f"got {intent}")
 check("swapper returns alternative payload", data is not None and len(data) == 1)
 if data:
     check("swapper targets same body part", data[0]["Title"] != "Bench Press")

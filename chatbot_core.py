@@ -14,6 +14,7 @@ import json
 import pickle
 import re
 import random
+import difflib
 import pandas as pd
 
 # ==============================================================================
@@ -36,10 +37,10 @@ df = pd.read_csv("gym_exercises_clean.csv")
 
 # Extract unique slot values from dataset columns to define recognized entity vocabularies
 SLOT_VOCAB = {
-    "bodypart": sorted(df["BodyPart"].dropna().unique().tolist()),
-    "equipment": sorted(df["Equipment"].dropna().unique().tolist()),
-    "level": sorted(df["Level"].dropna().unique().tolist()),
-    "type": sorted(df["Type"].dropna().unique().tolist()),
+    "bodypart": sorted(df["BodyPart"].dropna().unique().tolist(), key=len, reverse=True),
+    "equipment": sorted(df["Equipment"].dropna().unique().tolist(), key=len, reverse=True),
+    "level": sorted(df["Level"].dropna().unique().tolist(), key=len, reverse=True),
+    "type": sorted(df["Type"].dropna().unique().tolist(), key=len, reverse=True),
 }
 
 # Map common user slang and informal terms to official dataset values
@@ -83,21 +84,11 @@ MULTI_BODYPART = {
 def apply_filters(subset, slots, skip=()):
     """
     Progressively filters a DataFrame subset by extracted entity slots.
-    
-    Parameters:
-    - subset (DataFrame): Current candidate pool of exercises.
-    - slots (dict): Extracted entity parameters (level, equipment, bodypart, type).
-    - skip (tuple): Slot categories to intentionally ignore during filtering.
-    
-    Returns:
-    - subset (DataFrame): Narrowed exercise pool.
-    - applied (list): List of slot values that successfully matched dataset rows.
     """
     order = [("bodypart", "BodyPart"), ("equipment", "Equipment"),
              ("level", "Level"), ("type", "Type")]
     applied = []
     
-    # Iterate through defined slot order and filter subset if matching rows exist
     for slot_key, column in order:
         if slot_key in skip or slot_key not in slots:
             continue
@@ -106,7 +97,6 @@ def apply_filters(subset, slots, skip=()):
             subset = narrowed
             applied.append(slots[slot_key])
             
-    # Handle multi-muscle groups (e.g., 'legs' matching Quadriceps, Hamstrings, etc.)
     if "bodypart" not in skip and "bodypart" not in slots \
             and slots.get("bodypart_multi"):
         narrowed = subset[subset["BodyPart"].isin(slots["bodypart_multi"])]
@@ -115,26 +105,19 @@ def apply_filters(subset, slots, skip=()):
             
     return subset, applied
 
-# Cache maximum rating in dataset for normalization during scoring
 MAX_RATING = df["Rating"].max()
 
 def recommendation_score(subset):
     """
     Computes a weighted quality score for exercise sorting.
     Formula: Score = 0.6 * (Rating / Max_Rating) + 0.4 * Has_Description
-    Ensures high-rated exercises with complete instruction texts rank highest.
     """
     return (0.6 * (subset["Rating"] / MAX_RATING) + 0.4 * subset["has_description"].astype(int))
 
 def top_pool(subset, n=10):
-    """
-    Extracts the top N highest-scoring exercises from a subset.
-    Sampling randomly from this top pool provides variety while maintaining high quality.
-    """
     scored = subset.assign(_score=recommendation_score(subset))
     return scored.nlargest(min(n, len(scored)), "_score")
 
-# Lookup table mapping fitness goals/categories to set, rep, and rest guidelines
 VOLUME_GUIDE = {
     "Strength":              ("3-4 sets", "6-12 reps", "90 s rest"),
     "Powerlifting":          ("4-5 sets", "3-5 reps", "3 min rest"),
@@ -147,19 +130,11 @@ VOLUME_GUIDE = {
 DEFAULT_VOLUME = ("3 sets", "8-12 reps", "60-90 s rest")
 
 def prescribe_volume(exercise_type, goal=None):
-    """
-    Determines volume guidance ('sets x reps, rest').
-    Prioritizes user's overall session goal if provided; otherwise uses exercise Type.
-    """
     key = goal or exercise_type
     sets, reps, rest = VOLUME_GUIDE.get(key, DEFAULT_VOLUME)
     return f"{sets} x {reps}, {rest}"
 
 def format_exercise(row, goal=None):
-    """
-    Transforms a single pandas DataFrame row into a clean dictionary payload
-    formatted specifically for rendering expander cards in the Streamlit UI.
-    """
     return {
         "Title": row["Title"],
         "Desc": row["Desc"] if row["has_description"] else "No detailed description available in database.",
@@ -174,7 +149,6 @@ def format_exercise(row, goal=None):
 # 3. PROGRAM GENERATOR
 # ==============================================================================
 
-# Rotating workout split definitions for multi-day routine generation
 DAILY_ROTATION_POOL = [
     ("Push", ["Chest", "Shoulders", "Triceps"]),
     ("Pull", ["Lats", "Middle Back", "Biceps"]),
@@ -186,11 +160,6 @@ DAILY_ROTATION_POOL = [
 ]
 
 def generate_custom_program(days_count=3, rest_days=0, exclude_parts=None, target_parts=None, level=None, equipment=None, goal_type=None, random_test=False):
-    """
-    Generates a structured multi-day workout program dictionary mapped by day labels.
-    Handles targeted 1-day focus, 2-day upper/lower splits, rest day interleaving, 
-    and equipment/level/goal constraint filtering.
-    """
     if random_test:
         days_count = random.choice([1, 2, 3, 4, 5, 6, 7])
         rest_days = 0 if days_count == 7 else random.choice([0, 1, min(2, days_count - 1)])
@@ -214,18 +183,21 @@ def generate_custom_program(days_count=3, rest_days=0, exclude_parts=None, targe
         rotation_pool = DAILY_ROTATION_POOL
 
     active_splits = []
-    for i in range(workout_days_count):
-        label, parts = rotation_pool[i % len(rotation_pool)]
+    pool_idx = 0
+    # [FIX] Indented pool_idx += 1 inside the while loop to prevent infinite loops and duplicate splits
+    while len(active_splits) < workout_days_count and pool_idx < len(rotation_pool) * 2:
+        label, parts = rotation_pool[pool_idx % len(rotation_pool)]
         valid_parts = [p for p in parts if p not in exclude_parts]
         if valid_parts:
             active_splits.append((label, valid_parts))
+        pool_idx += 1
 
     rest_indices = set()
     if rest_days > 0:
         if days_count > rest_days:
-            step = days_count // (rest_days + 1)
+            step = days_count / (rest_days + 1)
             for r in range(1, rest_days + 1):
-                rest_indices.add(r * step)
+                rest_indices.add(round(r * step))
         else:
             rest_indices = set(range(1, days_count + 1))
 
@@ -239,7 +211,9 @@ def generate_custom_program(days_count=3, rest_days=0, exclude_parts=None, targe
                 "Desc": "Light stretching, foam rolling, hydration, and mobility exercises.",
                 "Equipment": "Body Only",
                 "Level": "Beginner",
-                "Rating": 10.0
+                "Rating": 10.0,
+                "Type": "Rest",
+                "Volume": "N/A"
             }]
             continue
 
@@ -269,15 +243,25 @@ def generate_custom_program(days_count=3, rest_days=0, exclude_parts=None, targe
 
             if subset.empty: continue
             pick = top_pool(subset, n=5).sample(1).iloc[0]
-            ex = format_exercise(pick)
+            # goal_type overrides the exercise's own Type inside a programme so
+            # the whole routine shares one prescription (see DESIGN DECISION).
+            ex = format_exercise(pick, goal=goal_type)
             if level and not level_available:
                 ex["level_note"] = (f"No {level}-level {part} exercises in the dataset "
                                      f"- showing {pick['Level']} instead")
             day_list.append(ex)
 
-        if day_list:
-            program[f"Day {d} ({label})"] = day_list
-            active_idx += 1
+    # UPDATED: Force the rotation to move forward even if day_list is empty
+        if not day_list: # NEW: Fallback if filters are too strict
+            day_list.append({
+                "Title": "Active Recovery",
+                "Desc": "No exercises matched your exact filters. Take a rest.",
+                "Equipment": "Body Only", "Level": "Beginner",
+                "Rating": 10.0, "Type": "Rest", "Volume": "N/A"
+            })
+            
+        program[f"Day {d} ({label})"] = day_list
+        active_idx += 1  # Move this OUTSIDE the 'if day_list' check to prevent freezing
 
     return program
 
@@ -285,7 +269,7 @@ def generate_custom_program(days_count=3, rest_days=0, exclude_parts=None, targe
 # 4. INTENT & SLOT EXTRACTION
 # ==============================================================================
 
-CONFIDENCE_THRESHOLD = 0.20  # Minimum probability threshold required to accept classifier intent
+CONFIDENCE_THRESHOLD = 0.20
 
 def predict_intent(text):
     vec = vectorizer.transform([text])
@@ -348,32 +332,27 @@ QUESTION_STOPWORDS = {
 # 5. EXERCISE LOOKUP & SWAPPER
 # ==============================================================================
 
-
 def _normalise(text):
-    """Lowercase, turn punctuation into spaces, collapse whitespace.
-    Applied to BOTH the message and every title so tier-1 substring matching
-    is symmetric. Previously only the message was normalised, so any title
-    containing " - " or "/" (148 of 2909 titles) could never match tier-1
-    and fell through to the looser token matcher."""
     cleaned = re.sub(r"[^\w\s]", " ", str(text).lower())
     return " ".join(cleaned.split())
 
-
-# Built once at import: (normalised_title, dataframe_index)
 _NORMALISED_TITLES = [(_normalise(t), i) for i, t in df["Title"].items()]
-
 
 def find_exercise(text):
     text_norm = _normalise(text)
 
-    # Tier 1: exact title contained in the message; longest match wins.
+    # Word-boundary check without a regex per title: pad both sides with
+    # spaces so " squat " only matches whole words. Compiling 2909 regexes
+    # per call cost ~105 ms; this is under 1 ms.
+    padded = f" {text_norm} "
     matches = [(len(nt), idx) for nt, idx in _NORMALISED_TITLES
-               if len(nt) > 3 and nt in text_norm]
+               if f" {nt} " in padded]
+
     if matches:
         matches.sort(key=lambda x: x[0], reverse=True)
         return df.loc[matches[0][1]]
     
-    text_words = set(w for w in text_norm.split() if len(w) >= 2 and w not in QUESTION_STOPWORDS)
+    text_words = set(w.rstrip('s') for w in text_norm.split() if len(w) >= 2 and w not in QUESTION_STOPWORDS)
     if not text_words: 
         return None
         
@@ -381,7 +360,9 @@ def find_exercise(text):
     best_key = (0, 0.0, 0.0)
     
     for _, row in df.iterrows():
-        title_words = set(w for w in row["Title"].lower().replace("-", " ").split() if len(w) >= 2)
+        title_norm = _normalise(row["Title"])
+        title_words = set(w for w in title_norm.split() 
+                        if len(w) >= 2 and w not in QUESTION_STOPWORDS)
         if not title_words: continue
         
         overlap = title_words & text_words
@@ -395,25 +376,21 @@ def find_exercise(text):
             best_key = key
             best_row = row
             
-    if best_row is None or best_key[1] < 0.7 or best_key[2] < 0.4:
+    if best_row is None or best_key[1] < 0.7 or best_key[2] < 0.3:
         return None
         
     return best_row
 
-def suggest_similar_exercises(text, limit=2):
-    import difflib
-    
+def suggest_similar_exercises(text, limit = 2):
     text_clean = re.sub(r"[^\w\s]", " ", text.lower().replace("-", " "))
-    words = [w for w in text_clean.split() if len(w) >= 3 and w not in QUESTION_STOPWORDS]
-    
+    words = [w for w in text_clean.split() if len(w) >= 2 and w not in QUESTION_STOPWORDS]
     if not words:
         return []
-        
     probe = " ".join(words)
     titles = df["Title"].dropna().astype(str).tolist()
     return difflib.get_close_matches(probe, titles, n=limit, cutoff=0.60)
 
-def swap_exercise(target_title_or_row, slots=None, exclude_list=None):
+def exercise_swap(target_title_or_row, slots=None, exclude_list=None):
     if isinstance(target_title_or_row, str):
         row = find_exercise(target_title_or_row)
     else:
@@ -445,6 +422,20 @@ def swap_exercise(target_title_or_row, slots=None, exclude_list=None):
 # 6. CORE CHATBOT ENGINE
 # ==============================================================================
 
+ACKNOWLEDGEMENTS = {
+    "ok", "okay", "k", "kk", "okok", "ok lah", "oklah", "alright", "aight",
+    "cool", "nice", "i see", "ic", "got it", "gotcha", "understood", "noted",
+    "makes sense", "sure", "yes", "yeah", "yep", "yup", "no", "nah", "nope",
+    "hmm", "hm", "oh", "ooh", "right", "fine", "mhm", "ah i see", "oh okay",
+    "oh i see", "sounds good", "fair enough", "ok noted", "ok got it",
+    "alright then", "i understand", "that makes sense", "okay cool",
+}
+ACK_REPLIES = [
+    "Got it! Anything else you'd like to know?",
+    "Sure thing - want another exercise, or a full routine?",
+    "Alright! Ask me anything else about training whenever you're ready.",
+]
+
 class FitnessBot:
     def __init__(self):
         self.context = {
@@ -465,7 +456,8 @@ class FitnessBot:
     def generate_response(self, intent, slots, text):
         data = None
         
-        if intent in ("greeting", "goodbye", "thanks", "motivation", "small_talk", "fallback"):
+        if intent in ("greeting", "goodbye", "thanks", "motivation", "small_talk",
+                      "fallback", "recovery_and_rest", "nutrition_out_of_scope"):
             return random.choice(RESPONSES[intent]), data
 
         if intent == "exercise_by_bodypart":
@@ -491,10 +483,10 @@ class FitnessBot:
             if extra:
                 label = f"{label} ({', '.join(extra)})"
             
-            matches = top_pool(subset).sample(min(3, len(top_pool(subset))))
+            pool = top_pool(subset)
+            matches = pool.sample(min(3, len(pool)))
             data = []
             
-            # [FIX] Expert-Level disclosure handling
             for _, row in matches.iterrows():
                 ex = format_exercise(row)
                 if slots.get("level") and row["Level"] != slots["level"]:
@@ -517,7 +509,6 @@ class FitnessBot:
             if not eq:
                 if self.context["exercise"] is not None:
                     row = self.context["exercise"]
-                    # [FIX] Bug #1: Return formatted payload array so the exercise card visualizes accurately
                     return f"{row['Title']} uses: {row['Equipment']}.", [format_exercise(row)]
                 return "What equipment do you have available? e.g. dumbbells, barbell, bodyweight only.", data
             
@@ -527,10 +518,10 @@ class FitnessBot:
 
             subset, extra = apply_filters(subset, slots, skip=("equipment",))
             label = f"{eq} ({', '.join(extra)})" if extra else eq
-            matches = top_pool(subset).sample(min(3, len(top_pool(subset))))
+            pool = top_pool(subset)
+            matches = pool.sample(min(3, len(pool)))
             
             data = []
-            # [FIX] Expert-Level disclosure handling
             for _, row in matches.iterrows():
                 ex = format_exercise(row)
                 if slots.get("level") and row["Level"] != slots["level"]:
@@ -546,9 +537,9 @@ class FitnessBot:
             if not lvl:
                 if slots.get("type"):
                     subset = df[df["Type"] == slots["type"]]
-                    matches = top_pool(subset).sample(min(3, len(top_pool(subset))))
+                    pool = top_pool(subset)
+                    matches = pool.sample(min(3, len(pool)))
                     data = []
-                    # [FIX] Expert-Level disclosure handling
                     for _, row in matches.iterrows():
                         ex = format_exercise(row)
                         if slots.get("level") and row["Level"] != slots["level"]:
@@ -565,7 +556,8 @@ class FitnessBot:
 
             subset, extra = apply_filters(subset, slots, skip=("level",))
             lvl_label = f"{lvl} ({', '.join(extra)})" if extra else lvl
-            matches = top_pool(subset).sample(min(3, len(top_pool(subset))))
+            pool = top_pool(subset)
+            matches = pool.sample(min(3, len(pool)))
             data = [format_exercise(row) for _, row in matches.iterrows()]
             self.context["recent_list"] = [ex["Title"] for ex in data]
             self.context["exercise"] = None
@@ -579,22 +571,25 @@ class FitnessBot:
                 "preset", "default", "build it", "ready"
             ])
             
-            extracted_days = None
-            for d in range(1, 8):
-                if f"{d} day" in text_lower or f"{d}-day" in text_lower or f"{d} days" in text_lower or text_lower.strip() in (f"{d} days", f"{d} day", str(d)):
-                    extracted_days = d
-                    break
-            if "week" in text_lower or "7 day" in text_lower:
-                extracted_days = 7
+            # [FIX] Preserve existing saved days from Step 1 to prevent Step 2 rest phrases from overwriting total days
+            existing_days = self.context["routine_slots"].get("days")
+            extracted_days = existing_days
+            if not existing_days:
+                for d in range(1, 8):
+                    if f"{d} day" in text_lower or f"{d}-day" in text_lower or f"{d} days" in text_lower or text_lower.strip() in (f"{d} days", f"{d} day", str(d)):
+                        extracted_days = d
+                        break
+                if "week" in text_lower or "7 day" in text_lower:
+                    extracted_days = 7
 
-            if not extracted_days and not is_random and not has_full_info and not self.context["routine_slots"].get("days"):
+            if not extracted_days and not is_random and not has_full_info and not existing_days:
                 self.context["pending_intent"] = "program_recommendation"
                 return (
                     "I can build a custom routine for you! How many days a week do you want to train? (e.g., *'3 days'*, *'5 days'*, or *'7 days'*).",
                     data
                 )
 
-            if extracted_days and not has_full_info and not is_random:
+            if extracted_days and not has_full_info and not is_random and not existing_days:
                 self.context["routine_slots"]["days"] = extracted_days
                 self.context["pending_intent"] = "program_recommendation_step2"
                 day_label = f"{extracted_days} day" if extracted_days == 1 else f"{extracted_days} days"
@@ -604,15 +599,24 @@ class FitnessBot:
                     data
                 )
 
-            days_count = extracted_days or self.context["routine_slots"].get("days", 3)
+            days_count = extracted_days or 3
             rest_days = 0
             no_rest_phrases = ("no rest", "0 rest", "zero rest", "without rest", "skip rest")
             if any(p in text_lower for p in no_rest_phrases):
                 rest_days = 0
             elif "rest" in text_lower and days_count < 7:
                 rest_days = 1
-                if "2 rest" in text_lower or "two rest" in text_lower:
-                    rest_days = 2
+                # Accept "2 rest days", "rest for 2 days" and "2 days rest" -
+                # the number and the word "rest" need not be adjacent.
+                num_words = {"two": 2, "three": 3}
+                m = re.search(r"(\d+|two|three)\D{0,12}rest|rest\D{0,12}(\d+|two|three)",
+                              text_lower)
+                if m:
+                    token = m.group(1) or m.group(2)
+                    rest_days = num_words.get(token, int(token) if token.isdigit() else 1)
+# ADD THIS: Prevent users from requesting more rest days than total workout days
+            if rest_days >= days_count:
+                rest_days = max(0, days_count - 1)
 
             exclude_parts = []
             if "no legs" in text_lower or "skip legs" in text_lower:
@@ -681,15 +685,10 @@ class FitnessBot:
         return random.choice(RESPONSES.get("fallback", ["Sorry, I didn't catch that."])), data
 
     def chat(self, text, historical_slots=None):
-        """
-        Master turn execution method with top-level crash prevention.
-        Guarantees a valid 5-tuple return payload even under uncaught exceptions.
-        """
         try:
             if not text or not text.strip():
                 return "fallback", 0.0, historical_slots or {}, "Please type a message or choose a suggestion above!", None
 
-            # Context TTL Expiry
             if self.context.get("exercise") is not None:
                 self.context["exercise_turns"] += 1
                 if self.context["exercise_turns"] > 3:
@@ -699,20 +698,39 @@ class FitnessBot:
 
             text_lower = text.lower().strip()
 
-            # Flow Breakout / Reset Keywords
+            if (text_lower.strip(" .!?") in ACKNOWLEDGEMENTS
+                    and not self.context.get("pending_intent")):
+                return ("acknowledgement", 1.0, historical_slots or {},
+                        random.choice(ACK_REPLIES), None)
+
             if text_lower in ("cancel", "stop", "nevermind", "exit", "reset"):
                 self.reset_context()
-                return "greeting", 1.0, historical_slots or {}, "Routine setup cancelled. How else can I help you?", None
+    # UPDATED: Return an empty dictionary {} instead of historical_slots to wipe filters
+                return "greeting", 1.0, {}, "Routine setup cancelled. How else can I help you?", None
 
             predicted_intent, predicted_confidence = predict_intent(text)
             new_slots = extract_slots(text)
 
-            slots = historical_slots.copy() if historical_slots else {}
-            slots.update(new_slots)
-
-            # Pending State Resolver
+            # Greeting/small_talk flush stale conversational slots, but a
+            # programme request MUST keep the sidebar filters - discarding them
+            # made "Experience Level: Beginner" have no effect on routines.
+            if predicted_intent in ("greeting", "small_talk"):
+                slots = new_slots
+            elif predicted_intent == "program_recommendation":
+                slots = historical_slots.copy() if historical_slots else {}
+                slots.update(new_slots)
+            else:
+                slots = historical_slots.copy() if historical_slots else {}
+                slots.update(new_slots)
+        
             if self.context.get("pending_intent") in ("program_recommendation", "program_recommendation_step2"):
-                if predicted_intent in ("exercise_howto", "exercise_by_bodypart", "exercise_by_equipment", "muscle_info") and predicted_confidence > 0.45:
+                # Any confidently-classified intent may escape the wizard except
+                # fallback (uncertain) and program_recommendation itself. A
+                # whitelist previously trapped "thanks", "hello" and even
+                # off-topic questions, silently building a routine instead.
+                if (predicted_intent not in ("fallback", "program_recommendation",
+                                             "exercise_swap")
+                        and predicted_confidence > 0.45):
                     self.context["pending_intent"] = None
                     intent, confidence = predicted_intent, predicted_confidence
                 else:
@@ -722,14 +740,16 @@ class FitnessBot:
             else:
                 intent, confidence = predicted_intent, predicted_confidence
 
-            # SWAP INTENT INTERCEPTOR (Bypassed if actively fulfilling routine wizard steps)
-            SWAP_KEYWORDS = ("swap", "replace", "substitute", "alternative for", "change exercise")
-            if intent != "program_recommendation" and any(kw in text_lower for kw in SWAP_KEYWORDS):
+            SWAP_KEYWORDS = ("swap", "replace", "substitute", "alternative for", "change exercise",
+                             "instead of", "other options for", "alternative")
+            if intent != "program_recommendation" and (
+                    intent == "exercise_swap"
+                    or any(kw in text_lower for kw in SWAP_KEYWORDS)):
                 found_target = find_exercise(text)
                 target = found_target if found_target is not None else self.context.get("exercise")
                 
                 if target is not None:
-                    new_row, msg = swap_exercise(
+                    new_row, msg = exercise_swap(
                         target, 
                         slots, 
                         exclude_list=self.context.get("recent_list", [])
@@ -745,15 +765,15 @@ class FitnessBot:
                         if slots.get("level") and new_row["Level"] != slots.get("level"):
                             ex_formatted["level_note"] = f"No {slots['level']} alternatives available - showing {new_row['Level']} instead."
                         
-                        card_payload = [ex_formatted]
-                        return "swap_exercise", 1.0, slots, msg, card_payload
+                        return "exercise_swap", 1.0, slots, msg, [ex_formatted]
+                    else:
+                        return "exercise_swap", 1.0, slots, msg, None
 
                 if self.context.get("recent_list"):
                     opts = ", ".join(f"'{ex}'" for ex in self.context["recent_list"])
-                    return "swap_exercise", 1.0, slots, f"Which exercise would you like to swap? Recent options: {opts}", None
-                return "swap_exercise", 1.0, slots, "Which exercise would you like to swap? Try typing 'swap bench press'.", None
+                    return "exercise_swap", 1.0, slots, f"Which exercise would you like to swap? Recent options: {opts}", None
+                return "exercise_swap", 1.0, slots, "Which exercise would you like to swap? Try typing 'swap bench press'.", None
 
-            # Reroute intents
             if intent == "exercise_by_level" and "level" not in slots:
                 if "bodypart" in slots or "bodypart_multi" in slots:
                     intent = "exercise_by_bodypart"
@@ -782,7 +802,6 @@ class FitnessBot:
             return intent, confidence, slots, reply, data
 
         except Exception as err:
-            # Crash Catch: Prevents any backend error from surfacing to the UI
             return "fallback", 0.0, historical_slots or {}, "I ran into an unexpected issue processing that. Could you rephrase your question?", None
 
 
