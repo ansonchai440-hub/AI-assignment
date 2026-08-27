@@ -6,7 +6,7 @@ CHANGELOG & ARCHITECTURAL HIGHLIGHTS:
 - Section 2: Session State Initialization & Engine Instantiation
 - Section 3: Custom HTML Chat Bubble Renderer (User Right / Assistant Left)
 - Section 4: Exercise Card & Program Multi-Tab Visual Helpers with Downloads
-- Section 5: Sidebar State Controls, Reset Callbacks & Active Context Inspector
+- Section 5: Sidebar State Controls, Help Panel, Reset Callbacks & Active Context Inspector
 - Section 6: Main Chat Interface, Dynamic Paginated Suggestion Chips & Processing Loop
 """
 
@@ -94,6 +94,13 @@ st.markdown("""
         border-color: #58A6FF !important;
         color: #58A6FF !important;
         background-color: #21262D !important;
+    }
+
+    /* Explicitly style primary-button descendants so the label remains visible
+       even when the global p/span rules are applied. */
+    button[data-testid="stBaseButton-primary"] *,
+    button[data-testid="baseButton-primary"] * {
+        color: inherit !important;
     }
 
     /* 6. Primary Buttons (Clear Chat History) */
@@ -308,7 +315,7 @@ with st.sidebar:
     # Bind dropdown selectboxes to session state key parameters
     opt_lvl = st.selectbox("Experience Level", ["Any"] + SLOT_VOCAB["level"], key="opt_lvl")
     opt_eq = st.selectbox("Available Equipment", ["Any"] + SLOT_VOCAB["equipment"], key="opt_eq")
-    opt_type = st.selectbox("Fitness Goal", ["Any"] + SLOT_VOCAB["type"], key="opt_type")
+    opt_type = st.selectbox("Exercise Type / Goal", ["Any"] + SLOT_VOCAB["type"], key="opt_type")
     
     st.session_state.sidebar_slots = {}
     if opt_lvl != "Any": 
@@ -321,6 +328,67 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Developer Tools")
     show_debug = st.toggle("Show NLP Diagnostics", value=False)
+
+    # What the chatbot can do (user-facing help panel)
+    with st.expander("\U0001F4A1 What can FitBot do?"):
+        st.markdown("**Exercise help**")
+        st.caption(
+            "Ask how to perform an exercise, what muscles it targets, "
+            "or ask for exercises for a specific body part."
+        )
+        st.code(
+            "How do I do a squat?\n"
+            "What muscles does a deadlift work?\n"
+            "Give me chest exercises",
+            language=None,
+        )
+
+        st.markdown("**Filter recommendations**")
+        st.caption(
+            "Combine body part, equipment, and experience level in one request."
+        )
+        st.code(
+            "Beginner chest exercises\n"
+            "Exercises with dumbbells\n"
+            "Expert back exercises",
+            language=None,
+        )
+
+        st.markdown("**Workout programs**")
+        st.caption(
+            "Build a multi-day routine with rest days or skipped muscle groups."
+        )
+        st.code(
+            "Give me a workout routine\n"
+            "3 days\n"
+            "1 rest day, no legs",
+            language=None,
+        )
+
+        st.markdown("**Exercise alternatives**")
+        st.caption("Ask FitBot to replace an exercise with another option.")
+        st.code(
+            "Replace bench press\n"
+            "What can I do instead of squats?",
+            language=None,
+        )
+
+        st.markdown("**Recovery & conversation**")
+        st.caption(
+            "You can also ask about rest/recovery, use follow-up questions, "
+            "ask for motivation, or test out-of-scope questions."
+        )
+        st.code(
+            "How long should I rest between sets?\n"
+            "What can you do?\n"
+            "Motivate me",
+            language=None,
+        )
+
+        st.caption(
+            "Tip: You do not need to use the suggestion buttons — you can type "
+            "your own question in the chat box."
+        )
 
     # Active Context Inspector expander (Read-only view of session memory state)
     with st.expander("\U0001F50D Active Context Inspector"):
@@ -335,10 +403,10 @@ with st.sidebar:
         st.markdown(f"**Routine slots:** `{ctx.get('routine_slots') or '{}'}`")
         st.markdown(f"**Sidebar filters:** `{st.session_state.sidebar_slots or '{}'}`")
         st.caption("Read-only view of session memory. Cleared by Clear Chat History.")
-    
+
     # Clear history button utilizing on_click callback to prevent StreamlitAPIException
     st.button(
-        "Clear Chat History", 
+        "🗑 Clear Chat History", 
         type="primary", 
         use_container_width=True, 
         on_click=reset_chat_and_filters
@@ -400,6 +468,38 @@ else:
         "exercise_howto": [
             ["Give me a workout routine", "Swap this exercise"],
             ["Show intermediate options", "Thanks!"]
+        ],
+        "exercise_by_level": [
+            ["Show chest exercises", "Show dumbbell exercises"],
+            ["How do I perform it?", "Give me a workout routine"]
+        ],
+        "muscle_info": [
+            ["How do I perform it?", "Show exercises for another body part"],
+            ["Give me a workout routine", "Thanks!"]
+        ],
+        "exercise_swap": [
+            ["Give me another swap", "Give me a workout routine"],
+            ["Show beginner exercises", "Thanks!"]
+        ],
+        "recovery_and_rest": [
+            ["How do I perform a squat?", "Give me a workout routine"],
+            ["Show beginner exercises", "Thanks!"]
+        ],
+        "nutrition_out_of_scope": [
+            ["Show beginner exercises", "How long should I rest between sets?"],
+            ["Give me a workout routine", "Thanks!"]
+        ],
+        "motivation": [
+            ["Give me a workout routine", "Show beginner exercises"],
+            ["Show dumbbell exercises", "Thanks!"]
+        ],
+        "thanks": [
+            ["Give me a workout routine", "Show beginner exercises"],
+            ["Show dumbbell exercises", "Goodbye"]
+        ],
+        "acknowledgement": [
+            ["Give me a workout routine", "Show beginner exercises"],
+            ["Show chest exercises", "Goodbye"]
         ]
     }
     suggestion_pages = SUGGESTION_MAP_PAGED.get(

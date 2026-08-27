@@ -356,7 +356,7 @@
         "encourage me to go gym"
       ],
       "responses": [
-        "Every rep counts \u2014 you've got this.",
+        "Every rep counts — you've got this.",
         "Small steps still move you forward."
       ]
     },
@@ -394,7 +394,7 @@
       ],
       "responses": [
         "I'm your fitness assistant! Ask me about exercises, muscle groups, or equipment.",
-        "I can recommend exercises and explain how to do them \u2014 just ask."
+        "I can recommend exercises and explain how to do them — just ask."
       ]
     },
     {
@@ -541,14 +541,12 @@
         "recommend me a good laptop to buy",
         "what is the capital of japan",
         "tell me a story about dragons",
-        "how many calories are in nasi lemak",
-        "what should i eat for dinner tonight",
         "give me tips for my job interview",
         "which phone has the best camera"
       ],
       "responses": [
         "Sorry, I didn't quite get that. Try asking about an exercise, a body part, or equipment.",
-        "That's outside my area \u2014 I only know fitness! Ask me about exercises, muscle groups, or workout plans."
+        "That's outside my area — I only know fitness! Ask me about exercises, muscle groups, or workout plans."
       ]
     }
   ]

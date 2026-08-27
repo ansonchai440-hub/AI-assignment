@@ -1,7 +1,7 @@
 """
 Step 5+6: System Integration, NLU Processing & Core Business Logic
 
-CHANGELOG & ARCHITECTURAL HIGHLIGHTS
+CHANGELOG & ARCHITECTURAL HIGHLIGHTS:
 - Section 1: Data Loaders & Vocabulary Mappings (Slots, Synonyms, Singular/Multi Bodyparts)
 - Section 2: Progressive Filtering & Dynamic Volume/Rep Prescription
 - Section 3: Smart Multi-Day Routine Generation (Full-Body / Split Logic)
@@ -12,6 +12,7 @@ CHANGELOG & ARCHITECTURAL HIGHLIGHTS
 
 import json
 import pickle
+import os
 import re
 import random
 import difflib
@@ -21,19 +22,38 @@ import pandas as pd
 # 1. DATA LOADERS & VOCABULARIES
 # ==============================================================================
 
+# Resolve project assets relative to this file so imports work from any cwd.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "intent_classifier.pkl")
+INTENTS_PATH = os.path.join(BASE_DIR, "intents.json")
+DATASET_PATH = os.path.join(BASE_DIR, "gym_exercises_clean.csv")
+
 # Load pre-trained TF-IDF vectorizer and Linear SVM intent classifier model
-with open("intent_classifier.pkl", "rb") as f:
+with open(MODEL_PATH, "rb") as f:
     saved = pickle.load(f)
 vectorizer = saved["vectorizer"]
 clf = saved["model"]
 
 # Load natural language dialogue template responses mapped by intent tag
-with open("intents.json") as f:
+with open(INTENTS_PATH, encoding="utf-8") as f:
     intents_data = json.load(f)
 RESPONSES = {intent["tag"]: intent["responses"] for intent in intents_data["intents"]}
 
+# Fail fast rather than silently running a stale model with a newer intents file.
+JSON_INTENTS = set(RESPONSES)
+MODEL_INTENTS = {str(tag) for tag in clf.classes_}
+if JSON_INTENTS != MODEL_INTENTS:
+    missing_in_model = sorted(JSON_INTENTS - MODEL_INTENTS)
+    extra_in_model = sorted(MODEL_INTENTS - JSON_INTENTS)
+    raise RuntimeError(
+        "Intent/model mismatch. "
+        f"Missing from classifier: {missing_in_model or 'none'}; "
+        f"Extra classifier classes: {extra_in_model or 'none'}. "
+        "Retrain intent_classifier.pkl using the current intents.json."
+    )
+
 # Load cleaned exercise dataset into a pandas DataFrame
-df = pd.read_csv("gym_exercises_clean.csv")
+df = pd.read_csv(DATASET_PATH)
 
 # Extract unique slot values from dataset columns to define recognized entity vocabularies
 SLOT_VOCAB = {
@@ -50,10 +70,13 @@ SYNONYMS = {
     "dumbbells": "Dumbbell", "dumbells": "Dumbbell", "dumbell": "Dumbbell",
     "kettlebell": "Kettlebells", "bands": "Bands", "resistance band": "Bands",
     "foam roller": "Foam Roll",
-    "beginner": "Beginner", "newbie": "Beginner", "new to": "Beginner",
-    "just started": "Beginner", "first time": "Beginner", "starting out": "Beginner",
-    "advanced": "Expert", "experienced": "Expert",
-    "muscle building": "Strength", "build muscle": "Strength", "muscle": "Strength",
+    "beginner": "Beginner", "beginners": "Beginner",
+    "beginner friendly": "Beginner", "beginner-friendly": "Beginner",
+    "newbie": "Beginner", "newbies": "Beginner", "new to": "Beginner",
+    "just started": "Beginner", "first time": "Beginner",
+    "first timer": "Beginner", "first timers": "Beginner",
+    "starting out": "Beginner",
+    "advanced": "Expert", "experts": "Expert", "experienced": "Expert",
     "strength": "Strength", "weight loss": "Cardio", "fat loss": "Cardio",
     "lose weight": "Cardio", "power": "Powerlifting", "olympic": "Olympic Weightlifting",
     "flexibility": "Stretching", "stretching": "Stretching",
@@ -81,29 +104,70 @@ MULTI_BODYPART = {
 # 2. FILTERING & VOLUME PRESCRIPTION
 # ==============================================================================
 
-def apply_filters(subset, slots, skip=()):
+def apply_filters_with_report(subset, slots, skip=()):
     """
-    Progressively filters a DataFrame subset by extracted entity slots.
+    Apply available filters while recording any requested filters that
+    cannot be satisfied. Failed filters are never treated as successful.
     """
-    order = [("bodypart", "BodyPart"), ("equipment", "Equipment"),
-             ("level", "Level"), ("type", "Type")]
+    order = [
+        ("bodypart", "BodyPart"),
+        ("equipment", "Equipment"),
+        ("level", "Level"),
+        ("type", "Type"),
+    ]
     applied = []
-    
+    missed = []
+
     for slot_key, column in order:
         if slot_key in skip or slot_key not in slots:
             continue
-        narrowed = subset[subset[column] == slots[slot_key]]
-        if not narrowed.empty:
+
+        requested = slots[slot_key]
+        narrowed = subset[subset[column] == requested]
+
+        if narrowed.empty:
+            missed.append((slot_key, requested))
+        else:
             subset = narrowed
-            applied.append(slots[slot_key])
-            
-    if "bodypart" not in skip and "bodypart" not in slots \
-            and slots.get("bodypart_multi"):
-        narrowed = subset[subset["BodyPart"].isin(slots["bodypart_multi"])]
-        if not narrowed.empty:
+            applied.append(requested)
+
+    if (
+        "bodypart" not in skip
+        and "bodypart" not in slots
+        and slots.get("bodypart_multi")
+    ):
+        requested_parts = slots["bodypart_multi"]
+        narrowed = subset[subset["BodyPart"].isin(requested_parts)]
+
+        if narrowed.empty:
+            missed.append(("bodypart_multi", requested_parts))
+        else:
             subset = narrowed
-            
+            applied.append("/".join(requested_parts))
+
+    return subset, applied, missed
+
+
+def apply_filters(subset, slots, skip=()):
+    """Backward-compatible two-value wrapper."""
+    subset, applied, _ = apply_filters_with_report(subset, slots, skip)
     return subset, applied
+
+
+def format_filter_miss(missed):
+    labels = {
+        "bodypart": "body part",
+        "bodypart_multi": "body parts",
+        "equipment": "equipment",
+        "level": "experience level",
+        "type": "exercise type",
+    }
+    parts = []
+    for key, value in missed:
+        display = ", ".join(value) if isinstance(value, list) else str(value)
+        parts.append(f"{labels.get(key, key)} = {display}")
+    return "; ".join(parts)
+
 
 MAX_RATING = df["Rating"].max()
 
@@ -225,33 +289,49 @@ def generate_custom_program(days_count=3, rest_days=0, exclude_parts=None, targe
 
         for part in parts:
             subset = df[df["BodyPart"] == part]
+            notes = []
+
             if equipment:
                 eq_subset = subset[subset["Equipment"] == equipment]
-                if not eq_subset.empty: subset = eq_subset
-            
-            level_available = True
+                if not eq_subset.empty:
+                    subset = eq_subset
+                else:
+                    notes.append(
+                        f"No {equipment} {part} exercises are available - "
+                        "showing the best available equipment instead."
+                    )
+
             if level:
                 lvl_subset = subset[subset["Level"] == level]
                 if not lvl_subset.empty:
                     subset = lvl_subset
                 else:
-                    level_available = False
-            
+                    notes.append(
+                        f"No {level}-level {part} exercises are available - "
+                        "showing the best available level instead."
+                    )
+
             if goal_type:
                 type_subset = subset[subset["Type"] == goal_type]
-                if not type_subset.empty: subset = type_subset
+                if not type_subset.empty:
+                    subset = type_subset
+                else:
+                    notes.append(
+                        f"No {goal_type} {part} exercises are available - "
+                        "showing the best available exercise type instead."
+                    )
 
-            if subset.empty: continue
+            if subset.empty:
+                continue
+
             pick = top_pool(subset, n=5).sample(1).iloc[0]
-            # goal_type overrides the exercise's own Type inside a programme so
-            # the whole routine shares one prescription (see DESIGN DECISION).
             ex = format_exercise(pick, goal=goal_type)
-            if level and not level_available:
-                ex["level_note"] = (f"No {level}-level {part} exercises in the dataset "
-                                     f"- showing {pick['Level']} instead")
+
+            if notes:
+                ex["level_note"] = " ".join(notes)
+
             day_list.append(ex)
 
-    # UPDATED: Force the rotation to move forward even if day_list is empty
         if not day_list: # NEW: Fallback if filters are too strict
             day_list.append({
                 "Title": "Active Recovery",
@@ -326,6 +406,11 @@ QUESTION_STOPWORDS = {
     "should", "please", "give", "tell", "about", "some", "any", "want",
     "it", "this", "that", "these", "those", "them", "they",
     "swap", "swaps", "replace", "substitute", "alternative", "change",
+    # Common words that appear in equipment/technique questions but are not
+    # part of the exercise name. Ignoring these lets queries such as
+    # "what equipment do I need for squats?" resolve the exercise correctly.
+    "equipment", "required", "require", "requires", "need", "needs",
+    "use", "uses", "using", "have", "has", "available", "needed",
 }
 
 # ==============================================================================
@@ -339,46 +424,169 @@ def _normalise(text):
 _NORMALISED_TITLES = [(_normalise(t), i) for i, t in df["Title"].items()]
 
 def find_exercise(text):
+    """
+    Resolve an exercise from natural language.
+
+    Resolution order:
+      1. Prefer an exact database title match.
+      2. Prefer a canonical representative for genuinely generic exercise
+         names/variants when the user has not specified a more detailed title.
+      3. Use conservative token overlap for understandable variants/typos.
+
+    The key rule is that specific modifiers supplied by the user must not be
+    replaced by a less-specific exercise.
+    """
     text_norm = _normalise(text)
 
-    # Word-boundary check without a regex per title: pad both sides with
-    # spaces so " squat " only matches whole words. Compiling 2909 regexes
-    # per call cost ~105 ms; this is under 1 ms.
-    padded = f" {text_norm} "
-    matches = [(len(nt), idx) for nt, idx in _NORMALISED_TITLES
-               if f" {nt} " in padded]
+    query_words = [
+        w.rstrip("s")
+        for w in text_norm.split()
+        if len(w) >= 2 and w not in QUESTION_STOPWORDS
+    ]
+    query_word_set = set(query_words)
 
-    if matches:
-        matches.sort(key=lambda x: x[0], reverse=True)
-        return df.loc[matches[0][1]]
-    
-    text_words = set(w.rstrip('s') for w in text_norm.split() if len(w) >= 2 and w not in QUESTION_STOPWORDS)
-    if not text_words: 
+    # 1. Prefer a database title whose meaningful words exactly match the
+    # user's meaningful exercise phrase. This avoids choosing e.g.
+    # "Dumbbell seal row" when the user simply said "dumbbell row".
+    exact_phrase_matches = []
+    for pos, (nt, idx) in enumerate(_NORMALISED_TITLES):
+        if not nt:
+            continue
+        title_words = [
+            w.rstrip("s")
+            for w in nt.split()
+            if len(w) >= 2 and w not in QUESTION_STOPWORDS
+        ]
+        if title_words and title_words == query_words:
+            exact_phrase_matches.append((-pos, len(title_words), idx))
+
+    if exact_phrase_matches:
+        exact_phrase_matches.sort(reverse=True)
+        return df.loc[exact_phrase_matches[0][2]]
+
+    padded = f" {text_norm} "
+
+    # 2. Canonical representatives for generic exercise names and common
+    # exercise families. These are only used when the user's meaningful words
+    # are exactly the alias; specific modifiers are therefore preserved.
+    CANONICAL = {
+        "squat": "Barbell Squat",
+        "deadlift": "Barbell Deadlift",
+        "bench press": "Barbell Bench Press - Medium Grip",
+        "row": "Seated Cable Rows",
+        "curl": "Barbell Curl",
+        "lunge": "Dumbbell Lunges",
+
+        # Common specific families where several dataset variations exist.
+        "front squat": "Barbell front squat",
+        "hack squat": "Hack Squat",
+        "dumbbell row": "Dumbbell row",
+        "barbell row": "Barbell bent-over row",
+        "reverse lunge": "Reverse lunge",
+        "romanian deadlift": "Romanian Deadlift",
+    }
+
+    for generic, specific in CANONICAL.items():
+        generic_words = [
+            w.rstrip("s")
+            for w in generic.split()
+            if len(w) >= 2
+        ]
+        if query_words == generic_words:
+            specific_norm = _normalise(specific)
+            specific_padded = f" {specific_norm} "
+
+            # Prefer an exact canonical title if available.
+            canonical_exact = [
+                (-pos, len(nt), idx)
+                for pos, (nt, idx) in enumerate(_NORMALISED_TITLES)
+                if nt == specific_norm
+            ]
+            if canonical_exact:
+                canonical_exact.sort(reverse=True)
+                return df.loc[canonical_exact[0][2]]
+
+            canonical_embedded = [
+                (-pos, len(nt), idx)
+                for pos, (nt, idx) in enumerate(_NORMALISED_TITLES)
+                if nt and f" {nt} " in specific_padded
+            ]
+            if canonical_embedded:
+                canonical_embedded.sort(reverse=True)
+                return df.loc[canonical_embedded[0][2]]
+
+    # 3. Embedded database title matches. Prefer titles with the least
+    # additional meaningful words, rather than simply choosing the longest
+    # title. This makes "dumbbell row" choose "Dumbbell row" over
+    # "Dumbbell row to triceps kick-back".
+    embedded_matches = []
+    for pos, (nt, idx) in enumerate(_NORMALISED_TITLES):
+        if not nt or f" {nt} " not in padded:
+            continue
+
+        title_words = [
+            w.rstrip("s")
+            for w in nt.split()
+            if len(w) >= 2 and w not in QUESTION_STOPWORDS
+        ]
+        if not title_words:
+            continue
+
+        overlap = set(title_words) & query_word_set
+        title_coverage = len(overlap) / len(title_words)
+        extra_words = len(set(title_words) - query_word_set)
+
+        embedded_matches.append(
+            (title_coverage, -extra_words, -len(title_words), -pos, idx)
+        )
+
+    if embedded_matches:
+        embedded_matches.sort(reverse=True)
+        return df.loc[embedded_matches[0][4]]
+
+    # 4. Conservative token-overlap fallback.
+    if not query_word_set:
         return None
-        
+
+    query_slots = extract_slots(text)
     best_row = None
-    best_key = (0, 0.0, 0.0)
-    
+    best_key = (0, 0.0, 0.0, 0.0, 0.0)
+
     for _, row in df.iterrows():
         title_norm = _normalise(row["Title"])
-        title_words = set(w for w in title_norm.split() 
-                        if len(w) >= 2 and w not in QUESTION_STOPWORDS)
-        if not title_words: continue
-        
-        overlap = title_words & text_words
-        if not overlap: continue
-        
-        user_coverage = len(overlap) / len(text_words)
+        title_words = {
+            w.rstrip("s")
+            for w in title_norm.split()
+            if len(w) >= 2 and w not in QUESTION_STOPWORDS
+        }
+        if not title_words:
+            continue
+
+        overlap = title_words & query_word_set
+        if not overlap:
+            continue
+
+        user_coverage = len(overlap) / len(query_word_set)
         title_coverage = len(overlap) / len(title_words)
-        
-        key = (len(overlap), user_coverage, title_coverage)
+        equipment_match = float(
+            bool(query_slots.get("equipment"))
+            and row["Equipment"] == query_slots["equipment"]
+        )
+
+        key = (
+            len(overlap),
+            user_coverage,
+            equipment_match,
+            title_coverage,
+            -len(title_words),
+        )
         if key > best_key:
             best_key = key
             best_row = row
-            
-    if best_row is None or best_key[1] < 0.7 or best_key[2] < 0.3:
+
+    if best_row is None or best_key[1] < 0.7 or best_key[3] < 0.3:
         return None
-        
+
     return best_row
 
 def suggest_similar_exercises(text, limit = 2):
@@ -423,12 +631,15 @@ def exercise_swap(target_title_or_row, slots=None, exclude_list=None):
 # ==============================================================================
 
 ACKNOWLEDGEMENTS = {
-    "ok", "okay", "k", "kk", "okok", "ok lah", "oklah", "alright", "aight",
+    "o", "ok", "okay", "k", "kk", "okok", "ok lah", "oklah", "alright", "aight",
     "cool", "nice", "i see", "ic", "got it", "gotcha", "understood", "noted",
     "makes sense", "sure", "yes", "yeah", "yep", "yup", "no", "nah", "nope",
     "hmm", "hm", "oh", "ooh", "right", "fine", "mhm", "ah i see", "oh okay",
     "oh i see", "sounds good", "fair enough", "ok noted", "ok got it",
-    "alright then", "i understand", "that makes sense", "okay cool",
+    "alright then", "i understand", "that makes sense", "okay cool", "oui", 
+    "roger that", "affirmative", "copy that", "roger", "acknowledged", "ou",
+    "ouu", "ouuu", "okie", "okie dokie", "okie doki", "okie doke", "okey dokey", "okey doke", 
+    
 }
 ACK_REPLIES = [
     "Got it! Anything else you'd like to know?",
@@ -463,6 +674,7 @@ class FitnessBot:
         if intent == "exercise_by_bodypart":
             bp = slots.get("bodypart")
             multi = slots.get("bodypart_multi")
+
             if bp:
                 subset = df[df["BodyPart"] == bp]
                 label = bp
@@ -473,26 +685,38 @@ class FitnessBot:
                 subset = df[df["Type"] == slots["type"]]
                 label = slots["type"]
             else:
-                return "Which body part are you targeting? e.g. chest, back, legs, shoulders.", data
-            
-            if subset.empty:
-                return f"Sorry, I couldn't find any {label} exercises matching your filters.", data
+                return (
+                    "Which body part are you targeting? e.g. chest, back, "
+                    "legs, shoulders.",
+                    data,
+                )
 
-            subset, extra = apply_filters(subset, slots, skip=("bodypart",))
+            if subset.empty:
+                return (
+                    f"Sorry, I couldn't find any {label} exercises "
+                    "matching your filters.",
+                    data,
+                )
+
+            subset, extra, missed = apply_filters_with_report(
+                subset, slots, skip=("bodypart",)
+            )
+            if missed:
+                detail = format_filter_miss(missed)
+                return (
+                    f"Sorry, I couldn't find {label} exercises matching "
+                    f"the requested filters ({detail}). Try adjusting your filters.",
+                    data,
+                )
+
             extra = [e for e in extra if e != label]
             if extra:
                 label = f"{label} ({', '.join(extra)})"
-            
+
             pool = top_pool(subset)
             matches = pool.sample(min(3, len(pool)))
-            data = []
-            
-            for _, row in matches.iterrows():
-                ex = format_exercise(row)
-                if slots.get("level") and row["Level"] != slots["level"]:
-                    ex["level_note"] = f"No {slots['level']} options found - showing {row['Level']} instead."
-                data.append(ex)
-                
+            data = [format_exercise(row) for _, row in matches.iterrows()]
+
             self.context["recent_list"] = [ex["Title"] for ex in data]
             self.context["exercise"] = None
             return f"Here are some {label} exercises:", data
@@ -500,87 +724,171 @@ class FitnessBot:
         if intent == "exercise_by_equipment":
             eq = slots.get("equipment")
             named_exercise = find_exercise(text)
+
             if named_exercise is not None:
-                self.context["exercise"] = named_exercise
-                self.context["exercise_turns"] = 0
-                row = named_exercise
-                return f"{row['Title']} uses: {row['Equipment']}.", [format_exercise(row)]
+                requested_eq = slots.get("equipment")
+                if requested_eq and named_exercise["Equipment"] != requested_eq:
+                    named_exercise = None
+                else:
+                    self.context["exercise"] = named_exercise
+                    self.context["exercise_turns"] = 0
+                    row = named_exercise
+                    return (
+                        f"{row['Title']} uses: {row['Equipment']}.",
+                        [format_exercise(row)],
+                    )
 
             if not eq:
                 if self.context["exercise"] is not None:
                     row = self.context["exercise"]
-                    return f"{row['Title']} uses: {row['Equipment']}.", [format_exercise(row)]
-                return "What equipment do you have available? e.g. dumbbells, barbell, bodyweight only.", data
-            
+                    return (
+                        f"{row['Title']} uses: {row['Equipment']}.",
+                        [format_exercise(row)],
+                    )
+                return (
+                    "What equipment do you have available? e.g. dumbbells, "
+                    "barbell, bodyweight only.",
+                    data,
+                )
+
             subset = df[df["Equipment"] == eq]
             if subset.empty:
                 return f"I don't have any exercises listed for '{eq}'.", data
 
-            subset, extra = apply_filters(subset, slots, skip=("equipment",))
+            subset, extra, missed = apply_filters_with_report(
+                subset, slots, skip=("equipment",)
+            )
+            if missed:
+                detail = format_filter_miss(missed)
+                return (
+                    f"Sorry, I couldn't find {eq} exercises matching "
+                    f"the requested filters ({detail}). Try adjusting your filters.",
+                    data,
+                )
+
             label = f"{eq} ({', '.join(extra)})" if extra else eq
             pool = top_pool(subset)
             matches = pool.sample(min(3, len(pool)))
-            
-            data = []
-            for _, row in matches.iterrows():
-                ex = format_exercise(row)
-                if slots.get("level") and row["Level"] != slots["level"]:
-                    ex["level_note"] = f"No {slots['level']} options found - showing {row['Level']} instead."
-                data.append(ex)
-                
+            data = [format_exercise(row) for _, row in matches.iterrows()]
+
             self.context["recent_list"] = [ex["Title"] for ex in data]
             self.context["exercise"] = None
             return f"Here are exercises using {label}:", data
 
         if intent == "exercise_by_level":
             lvl = slots.get("level")
+
             if not lvl:
                 if slots.get("type"):
                     subset = df[df["Type"] == slots["type"]]
+                    subset, _, missed = apply_filters_with_report(
+                        subset, slots, skip=("type",)
+                    )
+                    if missed:
+                        detail = format_filter_miss(missed)
+                        return (
+                            f"Sorry, I couldn't find {slots['type']} exercises "
+                            f"matching the requested filters ({detail}). "
+                            "Try adjusting your filters.",
+                            data,
+                        )
+
                     pool = top_pool(subset)
                     matches = pool.sample(min(3, len(pool)))
-                    data = []
-                    for _, row in matches.iterrows():
-                        ex = format_exercise(row)
-                        if slots.get("level") and row["Level"] != slots["level"]:
-                            ex["level_note"] = f"No {slots['level']} options found - showing {row['Level']} instead."
-                        data.append(ex)
+                    data = [format_exercise(row) for _, row in matches.iterrows()]
+
                     self.context["recent_list"] = [ex["Title"] for ex in data]
                     self.context["exercise"] = None
                     return f"Here are some {slots['type']} exercises:", data
+
                 return "What's your level - beginner, intermediate, or expert?", data
-                
+
             subset = df[df["Level"] == lvl]
             if subset.empty:
                 return f"Sorry, I couldn't find any {lvl} exercises.", data
 
-            subset, extra = apply_filters(subset, slots, skip=("level",))
+            subset, extra, missed = apply_filters_with_report(
+                subset, slots, skip=("level",)
+            )
+            if missed:
+                detail = format_filter_miss(missed)
+                return (
+                    f"Sorry, I couldn't find {lvl} exercises matching "
+                    f"the requested filters ({detail}). Try adjusting your filters.",
+                    data,
+                )
+
             lvl_label = f"{lvl} ({', '.join(extra)})" if extra else lvl
             pool = top_pool(subset)
             matches = pool.sample(min(3, len(pool)))
             data = [format_exercise(row) for _, row in matches.iterrows()]
+
             self.context["recent_list"] = [ex["Title"] for ex in data]
             self.context["exercise"] = None
             return f"Here are some {lvl_label} options:", data
 
         if intent == "program_recommendation":
             text_lower = text.lower()
-            is_random = "random" in text_lower or "test" in text_lower
-            has_full_info = any(kw in text_lower for kw in [
-                "rest", "skip", "no ", "full body", "upper", "lower", 
-                "preset", "default", "build it", "ready"
-            ])
-            
-            # [FIX] Preserve existing saved days from Step 1 to prevent Step 2 rest phrases from overwriting total days
+
+            # Use word/phrase matching instead of substring checks.
+            # This prevents words such as "latest" from triggering random
+            # test mode merely because they contain the letters "test".
+            is_random = (
+                _contains_phrase(text_lower, "random")
+                or _contains_phrase(text_lower, "random test")
+            )
+
+            has_full_info = any(
+                _contains_phrase(text_lower, phrase)
+                for phrase in (
+                    "rest day",
+                    "rest days",
+                    "no rest",
+                    "without rest",
+                    "skip legs",
+                    "no legs",
+                    "skip arms",
+                    "no arms",
+                    "full body",
+                    "upper body",
+                    "lower body",
+                    "preset",
+                    "default",
+                    "build it",
+                    "ready",
+                )
+            )
+
+            # Preserve existing saved days from Step 1 to prevent Step 2 rest
+            # phrases from overwriting the total number of days.
             existing_days = self.context["routine_slots"].get("days")
             extracted_days = existing_days
+
             if not existing_days:
-                for d in range(1, 8):
-                    if f"{d} day" in text_lower or f"{d}-day" in text_lower or f"{d} days" in text_lower or text_lower.strip() in (f"{d} days", f"{d} day", str(d)):
-                        extracted_days = d
-                        break
-                if "week" in text_lower or "7 day" in text_lower:
-                    extracted_days = 7
+                m_days = re.search(
+                    r"(?<!\d)([1-7])(?:\s|-)?days?\b",
+                    text_lower,
+                )
+                if m_days:
+                    extracted_days = int(m_days.group(1))
+                else:
+                    word_days = {
+                        "one": 1,
+                        "two": 2,
+                        "three": 3,
+                        "four": 4,
+                        "five": 5,
+                        "six": 6,
+                        "seven": 7,
+                    }
+                    m_word = re.search(
+                        r"\b(one|two|three|four|five|six|seven)\s+days?\b",
+                        text_lower,
+                    )
+                    if m_word:
+                        extracted_days = word_days[m_word.group(1)]
+                    elif _contains_phrase(text_lower, "week"):
+                        extracted_days = 7
 
             if not extracted_days and not is_random and not has_full_info and not existing_days:
                 self.context["pending_intent"] = "program_recommendation"
@@ -601,20 +909,40 @@ class FitnessBot:
 
             days_count = extracted_days or 3
             rest_days = 0
-            no_rest_phrases = ("no rest", "0 rest", "zero rest", "without rest", "skip rest")
-            if any(p in text_lower for p in no_rest_phrases):
+            no_rest_phrases = (
+                "no rest", "0 rest", "zero rest",
+                "without rest", "skip rest",
+            )
+            if any(_contains_phrase(text_lower, p) for p in no_rest_phrases):
                 rest_days = 0
-            elif "rest" in text_lower and days_count < 7:
-                rest_days = 1
-                # Accept "2 rest days", "rest for 2 days" and "2 days rest" -
-                # the number and the word "rest" need not be adjacent.
-                num_words = {"two": 2, "three": 3}
-                m = re.search(r"(\d+|two|three)\D{0,12}rest|rest\D{0,12}(\d+|two|three)",
-                              text_lower)
-                if m:
-                    token = m.group(1) or m.group(2)
-                    rest_days = num_words.get(token, int(token) if token.isdigit() else 1)
-# ADD THIS: Prevent users from requesting more rest days than total workout days
+            else:
+                # Recognise an actual rest-day instruction, including natural
+                # number phrasing. Do not treat arbitrary recovery questions
+                # such as "rest between sets" as a request for wizard rest days.
+                num_words = {
+                    "one": 1, "two": 2, "three": 3,
+                    "four": 4, "five": 5, "six": 6, "seven": 7,
+                }
+                rest_day_pattern = (
+                    r"(?:\b(?:\d+|one|two|three|four|five|six|seven)\s+"
+                    r"(?:rest\s+)?days?\b)"
+                    r"|(?:\brest\s+(?:for\s+)?(?:\d+|one|two|three|four|five|six|seven)\s+days?\b)"
+                    r"|(?:\b(?:one|two|three|four|five|six|seven|\d+)\s+rest\b)"
+                    r"|(?:\brest\s+day\b)"
+                )
+                if re.search(rest_day_pattern, text_lower):
+                    rest_days = 1
+                    # Accept "2 rest days", "two rest days", "rest for 2 days"
+                    # and "2 days rest".
+                    m = re.search(
+                        r"(\d+|one|two|three|four|five|six|seven)\D{0,12}rest"
+                        r"|rest\D{0,12}(\d+|one|two|three|four|five|six|seven)",
+                        text_lower,
+                    )
+                    if m:
+                        token = m.group(1) or m.group(2)
+                        rest_days = num_words.get(token, int(token) if token.isdigit() else 1)
+# Prevent users from requesting more rest days than total workout days.
             if rest_days >= days_count:
                 rest_days = max(0, days_count - 1)
 
@@ -703,13 +1031,42 @@ class FitnessBot:
                 return ("acknowledgement", 1.0, historical_slots or {},
                         random.choice(ACK_REPLIES), None)
 
-            if text_lower in ("cancel", "stop", "nevermind", "exit", "reset"):
+            # "cancel/stop/exit" cancel an active wizard. Outside a wizard,
+            # "exit" should remain a normal goodbye intent rather than silently
+            # resetting the conversation.
+            wizard_active = self.context.get("pending_intent") in (
+                "program_recommendation",
+                "program_recommendation_step2",
+            )
+            if (
+                wizard_active
+                and text_lower in ("cancel", "stop", "nevermind", "exit", "reset")
+            ):
                 self.reset_context()
-    # UPDATED: Return an empty dictionary {} instead of historical_slots to wipe filters
-                return "greeting", 1.0, {}, "Routine setup cancelled. How else can I help you?", None
+                return (
+                    "greeting",
+                    1.0,
+                    {},
+                    "Routine setup cancelled. How else can I help you?",
+                    None,
+                )
+
+            if text_lower == "reset":
+                self.reset_context()
+                return (
+                    "greeting",
+                    1.0,
+                    {},
+                    "Chat context reset. How else can I help you?",
+                    None,
+                )
 
             predicted_intent, predicted_confidence = predict_intent(text)
             new_slots = extract_slots(text)
+            was_in_program_wizard = self.context.get("pending_intent") in (
+                "program_recommendation",
+                "program_recommendation_step2",
+            )
 
             # Greeting/small_talk flush stale conversational slots, but a
             # programme request MUST keep the sidebar filters - discarding them
@@ -740,11 +1097,111 @@ class FitnessBot:
             else:
                 intent, confidence = predicted_intent, predicted_confidence
 
+            # Use word/phrase matching to avoid false positives such as
+            # "water the plants" being treated as a nutrition question.
+            NUTRITION_KW = (
+                "protein", "calories", "diet", "creatine", "eat",
+                "eating", "food", "meal", "nutrition", "macro", "macros",
+            )
+            NUTRITION_PHRASES = (
+                "how much water",
+                "water intake",
+                "drink water",
+                "hydration",
+            )
+            RECOVERY_KW = (
+                "rest between sets", "rest day", "rest days",
+                "sore", "soreness", "sleep", "recover",
+                "recovery", "doms",
+            )
+
+            in_program_wizard = was_in_program_wizard
+            has_swap_keyword = any(
+                _contains_phrase(text_lower, kw)
+                for kw in (
+                    "swap", "replace", "substitute", "alternative",
+                    "instead of", "change exercise",
+                )
+            )
+
+            nutrition_hit = (
+                any(_contains_phrase(text_lower, kw) for kw in NUTRITION_KW)
+                or any(_contains_phrase(text_lower, phrase) for phrase in NUTRITION_PHRASES)
+            )
+
+            # A keyword interceptor must not override a message the classifier
+            # has already understood confidently as something else. "i need to
+            # sleep bye" contains "sleep" but is a goodbye; "i want to eat
+            # healthy thanks" contains "eat" but is thanks. Only intercept when
+            # the classifier is uncertain, or predicted a topic these keywords
+            # could plausibly belong to.
+            CONVERSATIONAL = ("greeting", "goodbye", "thanks", "acknowledgement")
+            classifier_owns_it = (
+                predicted_intent in CONVERSATIONAL and predicted_confidence >= 0.40
+            ) or (
+                predicted_intent in ("exercise_howto", "exercise_by_bodypart",
+                                     "exercise_by_equipment", "exercise_by_level",
+                                     "muscle_info", "exercise_swap")
+                and predicted_confidence >= 0.55
+            )
+
+            if nutrition_hit and not classifier_owns_it:
+                # Nutrition is out-of-scope even during a wizard unless the
+                # message is clearly a program command containing a swap.
+                if not (in_program_wizard and has_swap_keyword):
+                    intent, confidence = "nutrition_out_of_scope", 1.0
+                    slots = {}
+            elif (any(_contains_phrase(text_lower, kw) for kw in RECOVERY_KW)
+                  and not classifier_owns_it):
+                # Program requests such as "3 days with 1 rest day" should
+                # remain program_recommendation even though they contain
+                # recovery terminology.
+                word_days = {
+                    "one", "two", "three", "four", "five", "six", "seven"
+                }
+                rest_day_command = bool(
+                    re.search(
+                        r"(?:\b(?:[1-7]|one|two|three|four|five|six|seven)\s+(?:rest\s+)?days?\b)"
+                        r"|(?:\brest\s+(?:for\s+)?(?:[1-7]|one|two|three|four|five|six|seven)\s+days?\b)",
+                        text_lower,
+                    )
+                    or _contains_phrase(text_lower, "no rest days")
+                    or _contains_phrase(text_lower, "no rest")
+                    or _contains_phrase(text_lower, "skip rest")
+                    or _contains_phrase(text_lower, "without rest")
+                )
+
+                program_like = (
+                    predicted_intent == "program_recommendation"
+                    or rest_day_command
+                    or bool(re.search(r"\b[1-7]\s*(?:-day|day|days)\b", text_lower))
+                    or bool(re.search(r"\b(?:one|two|three|four|five|six|seven)\s+(?:-day|day|days)\b", text_lower))
+                    or _contains_phrase(text_lower, "workout plan")
+                    or _contains_phrase(text_lower, "workout program")
+                    or _contains_phrase(text_lower, "training program")
+                    or _contains_phrase(text_lower, "workout routine")
+                )
+
+                wizard_command = (
+                    in_program_wizard
+                    and (
+                        predicted_intent in ("program_recommendation", "exercise_swap")
+                        or rest_day_command
+                    )
+                )
+
+                if not wizard_command and not program_like:
+                    intent, confidence = "recovery_and_rest", 1.0
+                    slots = {}
+
             SWAP_KEYWORDS = ("swap", "replace", "substitute", "alternative for", "change exercise",
                              "instead of", "other options for", "alternative")
-            if intent != "program_recommendation" and (
-                    intent == "exercise_swap"
-                    or any(kw in text_lower for kw in SWAP_KEYWORDS)):
+            if (not was_in_program_wizard
+                    and intent != "program_recommendation"
+                    and (
+                        intent == "exercise_swap"
+                        or any(kw in text_lower for kw in SWAP_KEYWORDS)
+                    )):
                 found_target = find_exercise(text)
                 target = found_target if found_target is not None else self.context.get("exercise")
                 

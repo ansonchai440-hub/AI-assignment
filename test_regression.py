@@ -25,8 +25,15 @@ Exit code 0 = all passed, 1 = at least one failure.
 import sys
 import traceback
 
-from chatbot_core import (FitnessBot, find_exercise, extract_slots,
-                          prescribe_volume, suggest_similar_exercises)
+from chatbot_core import (
+    FitnessBot,
+    find_exercise,
+    extract_slots,
+    prescribe_volume,
+    suggest_similar_exercises,
+    clf,
+    RESPONSES,
+)
 
 PASSED, FAILED = [], []
 
@@ -289,7 +296,223 @@ if data:
     check("swapper context updated to new exercise", swapper_bot.context["exercise"]["Title"] == data[0]["Title"])
 
 
+
+# ------------------------------------------------- 13. semantic checks
+section("13. Semantic Correctness Checks")
+
+# Test 1: Filter Violation Transparency
+b1 = FitnessBot()
+# An expert neck exercise using a medicine ball does not exist.
+_, _, _, reply, data = b1.chat("give me a neck exercise", {"equipment": "Medicine Ball", "level": "Expert"})
+if data and isinstance(data, list):
+    has_note = any("level_note" in ex for ex in data)
+    check("Missing filters explicitly disclosed to user", has_note, "Bot silently dropped filters without adding a level_note")
+else:
+    check("Missing filters explicitly disclosed to user", "couldn't" in reply.lower(), f"Bot gave no data but didn't admit failure: {reply}")
+
+# Test 2: Generic Exercise Ambiguity
+b2 = FitnessBot()
+_, _, _, _, data = b2.chat("how do i do a squat")
+if data and isinstance(data, list):
+    title = data[0]["Title"]
+    check("Generic 'squat' maps to canonical Barbell Squat", title == "Barbell Squat", f"Mapped to {title} instead")
+else:
+    check("Generic 'squat' maps to canonical Barbell Squat", False, "No data returned")
+
+# Test 3: Recovery Intent Interceptor
+b3 = FitnessBot()
+intent, _, _, _, _ = b3.chat("how long should i rest between sets")
+check("Recovery keywords trigger recovery_and_rest intent", intent == "recovery_and_rest", f"Triggered {intent} instead")
+
+# Test 4: Nutrition Intent Interceptor
+b4 = FitnessBot()
+intent, _, _, _, _ = b4.chat("should i take creatine")
+check("Nutrition keywords trigger nutrition_out_of_scope intent", intent == "nutrition_out_of_scope", f"Triggered {intent} instead")
+
+# Test 5: Slot Contamination
+slots = extract_slots("what muscle does it work")
+check("'muscle' does not falsely trigger 'type': 'Strength'", "type" not in slots, f"Extracted invalid slots: {slots}")
+
+
+
+# ------------------------------------------------- 14. adversarial edge cases
+section("14. Adversarial edge cases")
+
+# Variant-aware exercise lookup: explicit modifiers must not be replaced by
+# generic canonical aliases.
+variant_cases = [
+    ("how do i do a dumbbell bench press", "Dumbbell Bench Press"),
+    ("how do i do an incline dumbbell bench press", "Incline dumbbell bench press"),
+    ("how do i do a romanian deadlift", "Romanian Deadlift"),
+    ("how do i do a sumo deadlift", "Sumo deadlift"),
+    ("how do i do a reverse lunge", "Reverse lunge"),
+]
+for q, expected_title in variant_cases:
+    row = find_exercise(q)
+    check(
+        f"specific variant preserved for {q!r}",
+        row is not None and row["Title"] == expected_title,
+        f"got {None if row is None else row['Title']!r}",
+    )
+
+# Plural/friendly level language should map to the dataset's canonical level.
+for q in ["exercises for beginners", "beginner friendly exercises", "expert exercises"]:
+    slots = extract_slots(q)
+    expected = "Expert" if "expert" in q else "Beginner"
+    check(
+        f"{q!r} -> level={expected}",
+        slots.get("level") == expected,
+        f"got {slots}",
+    )
+
+# Nutrition keyword matching must use word boundaries. "eat" is inside words
+# such as weather/latest/greatest and must not trigger nutrition.
+for q in [
+    "whats the weather today",
+    "whats the latest football score",
+    "whats the greatest exercise",
+]:
+    intent, _, _, _, _ = FitnessBot().chat(q)
+    check(
+        f"substring '{q}' does not trigger nutrition",
+        intent == "fallback",
+        f"got {intent}",
+    )
+
+# Explicit filter violations should not silently return unrelated results.
+b = FitnessBot()
+_, _, _, reply, data = b.chat(
+    "give me a neck exercise",
+    {"equipment": "Medicine Ball", "level": "Expert"},
+)
+check(
+    "impossible multi-filter query returns no misleading results",
+    data is None and "couldn't" in reply.lower(),
+    f"reply={reply!r}, data={data!r}",
+)
+
+# Wizard-specific "rest day" wording must remain a program command.
+w = FitnessBot()
+w.chat("Give me a workout routine")
+w.chat("3 days")
+i, _, _, reply, data = w.chat("No Rest Days")
+check(
+    "'No Rest Days' remains a program command inside wizard",
+    i == "program_recommendation" and isinstance(data, dict) and len(data) == 3,
+    f"intent={i}, reply={reply[:80]!r}",
+)
+
+# "swap rest day..." must not be hijacked by the recovery interceptor while
+# the program wizard is waiting for its second step.
+w = FitnessBot()
+w.chat("Give me a workout routine")
+w.chat("3 days")
+i, _, _, reply, data = w.chat("swap rest day for another workout")
+check(
+    "wizard keeps swap/rest command in program flow",
+    i == "program_recommendation" and isinstance(data, dict),
+    f"intent={i}, reply={reply[:80]!r}",
+)
+
+# The classifier classes and response definitions must stay synchronized.
+try:
+    check(
+        "classifier classes match intents.json",
+        set(str(x) for x in clf.classes_) == set(RESPONSES),
+        f"model={sorted(str(x) for x in clf.classes_)}, json={sorted(RESPONSES)}",
+    )
+except NameError:
+    check(
+        "classifier classes match intents.json",
+        False,
+        "classifier/response metadata unavailable to test",
+    )
+
+
+
+# ------------------------------------------------- 15. parser substring traps
+section("15. Parser substring traps")
+
+# "latest" contains the letters "test" but must not activate random-test mode.
+b = FitnessBot()
+intent, _, _, reply, _ = b.chat("what are the latest exercises?")
+check(
+    "'latest' does not activate random-test mode",
+    not ("random test" in reply.lower()),
+    f"intent={intent}, reply={reply[:100]!r}",
+)
+
+# "interested" contains the letters "rest" but is not a rest-day command.
+b = FitnessBot()
+intent, _, _, reply, _ = b.chat("I am interested in a workout program")
+check(
+    "'interested' does not trigger rest parsing",
+    intent == "program_recommendation"
+    and b.context.get("pending_intent") == "program_recommendation",
+    f"intent={intent}, pending={b.context.get('pending_intent')}, reply={reply[:100]!r}",
+)
+
+# An unsupported multi-digit day count must not be partially parsed as 3 days.
+b = FitnessBot()
+intent, _, _, reply, _ = b.chat("I want a 13 day workout program")
+check(
+    "13-day request is not misread as 3 days",
+    intent == "program_recommendation"
+    and b.context.get("routine_slots", {}).get("days") is None,
+    f"intent={intent}, routine_slots={b.context.get('routine_slots')}, reply={reply[:100]!r}",
+)
+
+# Outside the wizard, "exit" is a goodbye rather than a routine-cancel command.
+b = FitnessBot()
+intent, _, _, reply, _ = b.chat("exit")
+check(
+    "outside-wizard 'exit' is treated as goodbye",
+    intent == "goodbye",
+    f"intent={intent}, reply={reply[:100]!r}",
+)
+
+# A program request containing rest terminology must remain a program request.
+b = FitnessBot()
+intent, _, _, reply, data = b.chat("3 days with 1 rest day")
+check(
+    "program request with rest terminology remains program_recommendation",
+    intent == "program_recommendation" and isinstance(data, dict) and len(data) == 3,
+    f"intent={intent}, reply={reply[:100]!r}",
+)
+
+# "water the plants" is off-topic, while genuine hydration questions remain nutrition.
+b = FitnessBot()
+intent, _, _, _, _ = b.chat("how should i water my plants")
+check(
+    "water-the-plants does not trigger nutrition",
+    intent == "fallback",
+    f"intent={intent}",
+)
+
+b = FitnessBot()
+intent, _, _, _, _ = b.chat("how much water should i drink")
+check(
+    "genuine water-intake question triggers nutrition",
+    intent == "nutrition_out_of_scope",
+    f"intent={intent}",
+)
+
+# --------------------------------------------------------- 15. Equipment question lookup
+section("15. Exercise reference inside equipment questions")
+for q, expected in [
+    ("what equipment do i need for squats", "Barbell Squat"),
+    ("what equipment does a deadlift require", "Barbell Deadlift"),
+    ("what equipment does bench press need", "Bench press"),
+]:
+    row = find_exercise(q)
+    check(
+        f"equipment question resolves {q!r}",
+        row is not None and row["Title"] == expected,
+        f"got {None if row is None else row['Title']!r}",
+    )
+
 # ---------------------------------------------------------------- summary
+
 print("\n" + "=" * 62)
 print(f"PASSED: {len(PASSED)}   FAILED: {len(FAILED)}")
 if FAILED:
