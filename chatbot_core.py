@@ -1,5 +1,5 @@
 """
-Step 5+6: System Integration, NLU Processing & Core Business Logic
+System Integration, NLU Processing & Core Business Logic
 
 CHANGELOG & ARCHITECTURAL HIGHLIGHTS:
 - Section 1: Data Loaders & Vocabulary Mappings (Slots, Synonyms, Singular/Multi Bodyparts)
@@ -26,7 +26,7 @@ import pandas as pd
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "intent_classifier.pkl")
 INTENTS_PATH = os.path.join(BASE_DIR, "intents.json")
-DATASET_PATH = os.path.join(BASE_DIR, "gym_exercises_clean.csv")
+DATASET_PATH = os.path.join(BASE_DIR, "FitBot_cleaned_dataset.csv")
 
 # Load pre-trained TF-IDF vectorizer and Linear SVM intent classifier model
 with open(MODEL_PATH, "rb") as f:
@@ -175,8 +175,15 @@ def recommendation_score(subset):
     """
     Computes a weighted quality score for exercise sorting.
     Formula: Score = 0.6 * (Rating / Max_Rating) + 0.4 * Has_Description
+
+    73% of exercises have Rating == 0 (unrated, not "rated zero"). Treating
+    that as a real low score meant the same rated minority kept getting
+    recommended. Unrated exercises now get a neutral 0.5 rating component
+    instead of 0, so they compete fairly with rated ones.
     """
-    return (0.6 * (subset["Rating"] / MAX_RATING) + 0.4 * subset["has_description"].astype(int))
+    has_rating = subset["Rating"] > 0
+    rating_component = (subset["Rating"] / MAX_RATING).where(has_rating, 0.5)
+    return 0.6 * rating_component + 0.4 * subset["has_description"].astype(int)
 
 def top_pool(subset, n=10):
     scored = subset.assign(_score=recommendation_score(subset))
@@ -589,7 +596,50 @@ def find_exercise(text):
 
     return best_row
 
+TYPO_CANONICAL = {
+    "squat": "Barbell Squat",
+    "deadlift": "Barbell Deadlift",
+    "bench press": "Barbell Bench Press - Medium Grip",
+    "lat pulldown": "Lat pull-down",
+    "bicep curl": "Barbell Curl",
+    "biceps curl": "Barbell Curl",
+    "push up": "Push-up",
+    "push ups": "Push-up",
+}
+
+def _typo_canonical_suggestions(text, limit=2):
+    text_clean = re.sub(r"[^\w\s]", " ", str(text).lower().replace("-", " "))
+    words = [w for w in text_clean.split() if len(w) >= 2 and w not in QUESTION_STOPWORDS]
+    if not words or len(words) > 6:
+        return [], 0.0
+
+    probe = " ".join(words)
+    scored = []
+    for alias, canonical in TYPO_CANONICAL.items():
+        ratio = difflib.SequenceMatcher(None, probe, alias).ratio()
+        # Small spelling mistakes and missing spaces are allowed, but the
+        # similarity must still be strong enough to look like an exercise name.
+        if ratio >= 0.68:
+            scored.append((ratio, canonical))
+
+    scored.sort(reverse=True)
+    out = []
+    seen = set()
+    for score, title in scored:
+        norm = _normalise(title)
+        if norm not in seen:
+            out.append(title)
+            seen.add(norm)
+        if len(out) >= limit:
+            break
+    return out, (scored[0][0] if scored else 0.0)
+
 def suggest_similar_exercises(text, limit = 2):
+    # Prefer a high-confidence match to common exercise-name families.
+    canonical, score = _typo_canonical_suggestions(text, limit=limit)
+    if canonical:
+        return canonical
+
     text_clean = re.sub(r"[^\w\s]", " ", text.lower().replace("-", " "))
     words = [w for w in text_clean.split() if len(w) >= 2 and w not in QUESTION_STOPWORDS]
     if not words:
@@ -654,7 +704,11 @@ class FitnessBot:
             "recent_list": [],       
             "pending_intent": None,  
             "routine_slots": {},     
-            "exercise_turns": 0      
+            "exercise_turns": 0,
+            "last_vague_intent": None,
+            "vague_intent_count": 0,
+            "last_vague_prompt": None,
+            "expired_exercise": None
         }
 
     def reset_context(self):
@@ -663,12 +717,60 @@ class FitnessBot:
         self.context["pending_intent"] = None
         self.context["routine_slots"] = {}
         self.context["exercise_turns"] = 0
+        self.context["last_vague_intent"] = None
+        self.context["vague_intent_count"] = 0
+
+    def _clear_vague_request_state(self):
+        self.context["last_vague_intent"] = None
+        self.context["vague_intent_count"] = 0
+        self.context["last_vague_prompt"] = None
+
+    def _vague_request_count(self, intent):
+        if self.context.get("last_vague_intent") == intent:
+            self.context["vague_intent_count"] = self.context.get("vague_intent_count", 0) + 1
+        else:
+            self.context["last_vague_intent"] = intent
+            self.context["vague_intent_count"] = 1
+        return self.context["vague_intent_count"]
+
+    def _choose_vague_prompt(self, prompts):
+        previous = self.context.get("last_vague_prompt")
+        choices = [p for p in prompts if p != previous] or prompts
+        chosen = random.choice(choices)
+        self.context["last_vague_prompt"] = chosen
+        return chosen
+
+    def _default_recommendation(self, subset, intro, limit=3):
+        if subset.empty:
+            return None, None
+        pool = top_pool(subset)
+        matches = pool.sample(min(limit, len(pool)))
+        data = [format_exercise(row) for _, row in matches.iterrows()]
+        self.context["recent_list"] = [ex["Title"] for ex in data]
+        self.context["exercise"] = None
+        return intro, data
 
     def generate_response(self, intent, slots, text):
         data = None
+
+        # A new non-vague response breaks the consecutive-vague streak.
+        if intent not in ("exercise_by_bodypart", "exercise_by_equipment", "exercise_by_level"):
+            self._clear_vague_request_state()
+        elif slots.get("bodypart") or slots.get("bodypart_multi") or slots.get("equipment") or slots.get("level") or slots.get("type"):
+            self._clear_vague_request_state()
         
+        if intent == "fallback":
+            close = suggest_similar_exercises(text)
+            if close:
+                opts = " or ".join(f"'{c}'" for c in close)
+                return (
+                    f"I couldn't find that exercise. Did you mean {opts}? "
+                    "Try the exercise name and I'll help you with it."
+                ), data
+            return random.choice(RESPONSES["fallback"]), data
+
         if intent in ("greeting", "goodbye", "thanks", "motivation", "small_talk",
-                      "fallback", "recovery_and_rest", "nutrition_out_of_scope"):
+                      "recovery_and_rest", "nutrition_out_of_scope"):
             return random.choice(RESPONSES[intent]), data
 
         if intent == "exercise_by_bodypart":
@@ -685,11 +787,23 @@ class FitnessBot:
                 subset = df[df["Type"] == slots["type"]]
                 label = slots["type"]
             else:
-                return (
-                    "Which body part are you targeting? e.g. chest, back, "
-                    "legs, shoulders.",
-                    data,
-                )
+                count = self._vague_request_count("exercise_by_bodypart")
+                if count >= 2:
+                    subset = df[df["Equipment"] == "Body Only"]
+                    if subset.empty:
+                        subset = df
+                    reply, default_data = self._default_recommendation(
+                        subset,
+                        "You didn't specify a body part, so I'll start with a few general bodyweight options."
+                    )
+                    if default_data:
+                        return reply, default_data
+                prompts = [
+                    "Which body part are you targeting? For example, chest, back, legs or shoulders.",
+                    "What body part would you like to train? You can say chest, back, legs, shoulders, and more.",
+                    "Tell me which body part you want to focus on, such as chest, back or legs."
+                ]
+                return random.choice(prompts), data
 
             if subset.empty:
                 return (
@@ -745,11 +859,23 @@ class FitnessBot:
                         f"{row['Title']} uses: {row['Equipment']}.",
                         [format_exercise(row)],
                     )
-                return (
-                    "What equipment do you have available? e.g. dumbbells, "
-                    "barbell, bodyweight only.",
-                    data,
-                )
+                count = self._vague_request_count("exercise_by_equipment")
+                if count >= 2:
+                    subset = df[df["Equipment"] == "Body Only"]
+                    if subset.empty:
+                        subset = df
+                    reply, default_data = self._default_recommendation(
+                        subset,
+                        "You didn't specify any equipment, so I'll start with a few bodyweight options."
+                    )
+                    if default_data:
+                        return reply, default_data
+                prompts = [
+                    "What equipment do you have available? For example, dumbbells, a barbell or just bodyweight.",
+                    "What equipment do you have handy? You can say dumbbells, bands, a cable machine or no equipment.",
+                    "Tell me what equipment you can use, such as dumbbells, barbells or bodyweight only."
+                ]
+                return self._choose_vague_prompt(prompts), data
 
             subset = df[df["Equipment"] == eq]
             if subset.empty:
@@ -801,7 +927,22 @@ class FitnessBot:
                     self.context["exercise"] = None
                     return f"Here are some {slots['type']} exercises:", data
 
-                return "What's your level - beginner, intermediate, or expert?", data
+                count = self._vague_request_count("exercise_by_level")
+                if count >= 2:
+                    subset = df[df["Level"] == "Beginner"]
+                    if not subset.empty:
+                        reply, default_data = self._default_recommendation(
+                            subset,
+                            "You didn't specify an experience level, so I'll start with some beginner-friendly options."
+                        )
+                        if default_data:
+                            return reply, default_data
+                prompts = [
+                    "What's your experience level: beginner, intermediate, or expert?",
+                    "How experienced are you with training? You can say beginner, intermediate or expert.",
+                    "Which difficulty suits you best: beginner, intermediate or expert?"
+                ]
+                return self._choose_vague_prompt(prompts), data
 
             subset = df[df["Level"] == lvl]
             if subset.empty:
@@ -979,15 +1120,35 @@ class FitnessBot:
             if not data:
                 return "I couldn't build a routine with those constraints. Try adjusting your sidebar filters.", data
             
-            mode_label = "random test" if is_random else f"{days_count}-day"
-            return f"I have built a custom {mode_label} routine for you. Check the tabs below:", data
+            mode_label = "surprise-me" if is_random else f"{days_count}-day"
+            note_count = sum(
+                1
+                for day_items in data.values()
+                if any(ex.get("level_note") for ex in day_items)
+            )
+            if note_count:
+                total_days = len(data)
+                reply = (
+                    f"I have built a custom {mode_label} routine for you. "
+                    f"Some requested filters were not available on {note_count} of {total_days} days, "
+                    "so those days use the closest available options. Check the tabs below."
+                )
+            else:
+                reply = f"I have built a custom {mode_label} routine for you. Check the tabs below."
+            return reply, data
 
         if intent in ("exercise_howto", "muscle_info"):
             row = find_exercise(text)
             if row is None and self.context["exercise"] is not None:
                 row = self.context["exercise"]
             if row is None:
-                self.context["pending_intent"] = intent 
+                self.context["pending_intent"] = intent
+                if self.context.get("expired_exercise"):
+                    expired = self.context.pop("expired_exercise")
+                    return (
+                        f"I lost track of the previous exercise ({expired}). "
+                        "Please name the exercise again and I'll continue from there.", data
+                    )
                 if self.context["recent_list"]:
                     opts = ", ".join(self.context["recent_list"])
                     return f"Which one did you mean: {opts}? Type its name and I'll explain it.", data
@@ -1016,13 +1177,6 @@ class FitnessBot:
         try:
             if not text or not text.strip():
                 return "fallback", 0.0, historical_slots or {}, "Please type a message or choose a suggestion above!", None
-
-            if self.context.get("exercise") is not None:
-                self.context["exercise_turns"] += 1
-                if self.context["exercise_turns"] > 3:
-                    self.context["exercise"] = None
-                    self.context["recent_list"] = []
-                    self.context["exercise_turns"] = 0
 
             text_lower = text.lower().strip()
 
@@ -1062,10 +1216,51 @@ class FitnessBot:
                 )
 
             predicted_intent, predicted_confidence = predict_intent(text)
+
+            # High-confidence typo-only exercise references get a suggestion
+            # before classifier-driven slot rerouting. This prevents inputs such
+            # as "bicep crul" or "lat pulldwon" from being misinterpreted as a
+            # body-part or conversational intent.
+            typo_candidates, typo_score = _typo_canonical_suggestions(text, limit=2)
+            short_query = len(_normalise(text).split()) <= 6
+            if (
+                typo_candidates
+                and typo_score >= 0.68
+                and short_query
+                and find_exercise(text) is None
+            ):
+                opts = " or ".join(f"'{c}'" for c in typo_candidates)
+                return (
+                    "fallback", 1.0, {},
+                    f"I couldn't find that exercise. Did you mean {opts}? "
+                    "Type the exercise name and I'll explain it.",
+                    None,
+                )
+
             new_slots = extract_slots(text)
+
+            if self.context.get("exercise") is not None:
+                self.context["exercise_turns"] += 1
+                if self.context["exercise_turns"] > 3:
+                    self.context["expired_exercise"] = self.context["exercise"]["Title"]
+                    self.context["exercise"] = None
+                    self.context["recent_list"] = []
+                    self.context["exercise_turns"] = 0
+
             was_in_program_wizard = self.context.get("pending_intent") in (
                 "program_recommendation",
                 "program_recommendation_step2",
+            )
+
+            # Detect swap-style wording before wizard routing so the wizard can
+            # keep ownership of commands such as "replace legs with arms"
+            # instead of sending them to the standalone exercise-swap flow.
+            has_swap_keyword = any(
+                _contains_phrase(text_lower, kw)
+                for kw in (
+                    "swap", "replace", "substitute", "alternative",
+                    "instead of", "change exercise",
+                )
             )
 
             # Greeting/small_talk flush stale conversational slots, but a
@@ -1081,19 +1276,70 @@ class FitnessBot:
                 slots.update(new_slots)
         
             if self.context.get("pending_intent") in ("program_recommendation", "program_recommendation_step2"):
-                # Any confidently-classified intent may escape the wizard except
-                # fallback (uncertain) and program_recommendation itself. A
-                # whitelist previously trapped "thanks", "hello" and even
-                # off-topic questions, silently building a routine instead.
-                if (predicted_intent not in ("fallback", "program_recommendation",
-                                             "exercise_swap")
-                        and predicted_confidence > 0.45):
+                # Keep genuine routine commands inside the wizard even when the
+                # classifier prefers recovery_and_rest or exercise_swap. The
+                # wizard owns inputs such as "3 days", "1 rest day", "no rest
+                # days", body-part skips, and swap-like wording.
+                day_count_command = bool(
+                    re.search(r"\b[1-7]\s*(?:-day|day|days)\b", text_lower)
+                    or re.search(
+                        r"\b(?:one|two|three|four|five|six|seven)\s*(?:-day|day|days)\b",
+                        text_lower,
+                    )
+                    or _contains_phrase(text_lower, "one week")
+                    or _contains_phrase(text_lower, "a week")
+                    or _contains_phrase(text_lower, "week")
+                )
+                rest_or_skip_command = bool(
+                    re.search(
+                        r"(?:\b(?:[1-7]|one|two|three|four|five|six|seven)\s+(?:rest\s+)?days?\b)"
+                        r"|(?:\brest\s+(?:for\s+)?(?:[1-7]|one|two|three|four|five|six|seven)\s+days?\b)",
+                        text_lower,
+                    )
+                    or _contains_phrase(text_lower, "no rest days")
+                    or _contains_phrase(text_lower, "no rest")
+                    or _contains_phrase(text_lower, "skip rest")
+                    or _contains_phrase(text_lower, "without rest")
+                    or _contains_phrase(text_lower, "skip legs")
+                    or _contains_phrase(text_lower, "no legs")
+                    or _contains_phrase(text_lower, "skip arms")
+                    or _contains_phrase(text_lower, "no arms")
+                    or _contains_phrase(text_lower, "build it")
+                    or _contains_phrase(text_lower, "build routine now")
+                    or _contains_phrase(text_lower, "ready")
+                    or _contains_phrase(text_lower, "preset")
+                    or _contains_phrase(text_lower, "default")
+                )
+                wizard_swap_command = has_swap_keyword
+                wizard_program_command = (
+                    predicted_intent == "program_recommendation"
+                    or day_count_command
+                    or rest_or_skip_command
+                    or wizard_swap_command
+                )
+                confident_breakout = (
+                    predicted_intent in ("greeting", "goodbye", "thanks", "acknowledgement")
+                    and predicted_confidence >= 0.40
+                ) or (
+                    predicted_intent in ("exercise_howto", "exercise_by_bodypart",
+                                         "exercise_by_equipment", "exercise_by_level",
+                                         "muscle_info")
+                    and predicted_confidence >= 0.55
+                )
+
+                if confident_breakout and not wizard_program_command:
                     self.context["pending_intent"] = None
                     intent, confidence = predicted_intent, predicted_confidence
+                elif wizard_program_command:
+                    intent, confidence = "program_recommendation", 1.0
+                    # A day-count response is the wizard's Step 1 and must keep
+                    # the pending state so Step 2 can be collected. Completion
+                    # commands generate the routine and can clear the pending state.
+                    if not day_count_command or self.context["routine_slots"].get("days"):
+                        self.context["pending_intent"] = None
                 else:
                     intent = "program_recommendation"
                     confidence = 1.0
-                    self.context["pending_intent"] = None
             else:
                 intent, confidence = predicted_intent, predicted_confidence
 
@@ -1217,6 +1463,7 @@ class FitnessBot:
                         
                         if new_row["Title"] not in self.context["recent_list"]:
                             self.context["recent_list"].append(new_row["Title"])
+                        self.context["recent_list"] = self.context["recent_list"][-5:]
                             
                         ex_formatted = format_exercise(new_row, goal=slots.get("type"))
                         if slots.get("level") and new_row["Level"] != slots.get("level"):

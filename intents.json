@@ -356,7 +356,7 @@
         "encourage me to go gym"
       ],
       "responses": [
-        "Every rep counts — you've got this.",
+        "Every rep counts \u2014 you've got this.",
         "Small steps still move you forward."
       ]
     },
@@ -394,7 +394,7 @@
       ],
       "responses": [
         "I'm your fitness assistant! Ask me about exercises, muscle groups, or equipment.",
-        "I can recommend exercises and explain how to do them — just ask."
+        "I can recommend exercises and explain how to do them \u2014 just ask."
       ]
     },
     {
@@ -455,7 +455,27 @@
         "Other options for leg press",
         "Can I replace this exercise",
         "What is a good substitute",
-        "I want to replace squats"
+        "I want to replace squats",
+        "swap bench press",
+        "replace this with something else",
+        "give me a different exercise",
+        "I don't like this one give me another",
+        "change exercise please",
+        "not this one, something else",
+        "can you switch this out",
+        "alternative to deadlift",
+        "what else can I do instead",
+        "replace squats with something else",
+        "different movement for the same muscle",
+        "swap this out",
+        "I want something different",
+        "any other option for chest",
+        "substitute this exercise for another one",
+        "change this movement",
+        "give me a replacement for lunges",
+        "I can't do this one, alternative please",
+        "another exercise for the same body part",
+        "switch this exercise"
       ],
       "responses": [
         "Here is an alternative exercise you can try: {exercise_list}"
@@ -470,7 +490,27 @@
         "Is it okay to train muscle groups two days in a row",
         "How much sleep for muscle recovery",
         "Can I work out with DOMS",
-        "Should I train while sore"
+        "Should I train while sore",
+        "how many rest days should I take",
+        "is it bad to skip rest days",
+        "how often should I train each muscle group",
+        "how long to recover between workouts",
+        "do I need a rest day this week",
+        "is soreness normal after training",
+        "how do I know if I'm overtraining",
+        "should I stretch on rest days",
+        "how many days off between leg days",
+        "is one rest day enough",
+        "how do I recover faster after training",
+        "what should I do on a rest day",
+        "can I still be sore two days later",
+        "how important is sleep for recovery",
+        "should I rest or push through soreness",
+        "how long until muscles fully recover",
+        "recovery tips after a hard workout",
+        "do rest days affect muscle growth",
+        "is active recovery better than full rest",
+        "how many rest days per week is ideal"
       ],
       "responses": [
         "Rest and recovery are vital for muscle growth. For strength, rest 2-3 minutes between sets; for hypertrophy, 60-90 seconds is standard."
@@ -485,7 +525,27 @@
         "Best diet for weight loss",
         "Should I take creatine",
         "What meal plan should I follow",
-        "How much water should I drink"
+        "How much water should I drink",
+        "what should I eat to build muscle",
+        "is intermittent fasting good for fitness",
+        "how many carbs should I eat daily",
+        "best supplements for muscle growth",
+        "what's a good post workout meal",
+        "should I count calories",
+        "is a protein shake necessary",
+        "what foods help with recovery",
+        "how much sugar is too much",
+        "best pre workout snack",
+        "is keto good for weightlifting",
+        "how many meals a day should I eat",
+        "what vitamins should I take",
+        "is fasting bad before training",
+        "how do I calculate my macros",
+        "best foods for weight loss",
+        "should I eat more protein or carbs",
+        "what's a good bulking diet",
+        "how much water during a workout",
+        "is dairy bad for muscle building"
       ],
       "responses": [
         "I specialize strictly in exercise routines and workout planning! For specific diet or macro advice, consulting a nutritionist is best."
@@ -546,7 +606,7 @@
       ],
       "responses": [
         "Sorry, I didn't quite get that. Try asking about an exercise, a body part, or equipment.",
-        "That's outside my area — I only know fitness! Ask me about exercises, muscle groups, or workout plans."
+        "That's outside my area \u2014 I only know fitness! Ask me about exercises, muscle groups, or workout plans."
       ]
     }
   ]

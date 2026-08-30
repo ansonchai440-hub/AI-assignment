@@ -376,7 +376,8 @@ with st.sidebar:
         st.markdown("**Recovery & conversation**")
         st.caption(
             "You can also ask about rest/recovery, use follow-up questions, "
-            "ask for motivation, or test out-of-scope questions."
+            "ask for motivation, or test out-of-scope questions. FitBot can also handle "
+            "common spelling variations when identifying exercises."
         )
         st.code(
             "How long should I rest between sets?\n"
